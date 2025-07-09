@@ -14,7 +14,8 @@
  *
  *  $ make colloid_init 
  *
- *  $ ./colloid_init [-a a0] [-h ah] [-v volume_fraction] 
+ * $ ./colloid_init [-a obstacle-radius] [-h hydrodynamic radius] [-v volume-fraction] [ -r robot radius] [ -x Xdimension] [ -y Ydimension] [ -y Ydimension]
+    [-p periodiciy]  , where periodicity stands for three values either 1 or 0 to switch periodicity or not in that respective diomension.
  *  should produce a file config.cds.init.001-001 in the specified format.
  *
  *  Options:
@@ -46,8 +47,9 @@ enum format {ASCII, BINARY};
 #define NTRYMAX 10000
 #define NMC 10000000
 
-int  colloid_init_vf_n(cs_t * cs, const double ah, const double vf);
+int  colloid_init_vf_n(cs_t * cs, const double ah, const double r0, const double vf);
 void colloid_init_trial(cs_t * cs, double r[3], double dh);
+double colloid_calc_vf(cs_t * cs, const double ah, const double r0, const int nb);
 int  colloid_init_random(cs_t * cs, int nc, colloid_state_t * state, double dh);
 int  colloid_init_mc(cs_t * cs, int nc, colloid_state_t * state, double dh);
 void colloid_init_write_file(const int nc, const colloid_state_t * pc,
@@ -79,11 +81,15 @@ int main(int argc, char ** argv) {
   const double dh_default = 0.5;   /* "grace' distance */
   const double q0_default = 0.0;   /* positive charge */ 
   const double q1_default = 0.0;   /* negative charge */
+  const double r0_default = 2.3;   /* Input radius */
 
+
+  //double new_vf; /* calculate new vf if user requires change*/
   /* At the moment, three quantities can come from the command line */
 
   double a0 = a0_default;
   double ah = ah_default;
+  double r0 = r0_default;
   double vf = vf_default;
   double dh = dh_default;
   double q0 = q0_default;
@@ -102,10 +108,14 @@ int main(int argc, char ** argv) {
    * and sort out the data file name  */
 
   if ((argc-1) % 2 != 0) {
-    printf("Usage: %s [-a a0] [-h ah] [-v volume-fraction]\n", argv[0]);
+    printf("Usage: %s [-a obstacle-radius] [-h hydrodynamic radius] [-v volume-fraction] [ -r robot radius] [ -x Xdimension] [ -y Ydimension] [ -y Ydimension]\n"
+    "[-p periodiciy]\n", argv[0]);
+    printf("[-p periodcity] one space for each direction\n");
+           
+                //"[-w wall] [-px periodcity_x] [-py periodcity_y] [-pz periodcity_z] \n", argv[0]);
     exit(EXIT_FAILURE);
   }
-
+  
   for (optind = 1; optind < argc && argv[optind][0] == '-'; optind += 2) {
     switch (argv[optind][1]) {
     case 'a':
@@ -120,6 +130,36 @@ int main(int argc, char ** argv) {
       vf = atof(argv[optind+1]);
       printf("%s: option -v sets vf = %f\n", argv[0], vf);
       break;
+   case 'x':
+      ntotal[X] = atoi(argv[optind+1]);
+      printf("%s: option -x sets ntotal[X] = %d\n", argv[0], ntotal[X]);
+      break;
+   case 'y':
+      ntotal[Y] = atoi(argv[optind+1]);
+      printf("%s: option -y sets ntotal[X] = %d\n", argv[0], ntotal[Y]);
+      break;
+   case 'z':
+      ntotal[Z] = atoi(argv[optind+1]);
+      printf("%s: option -z sets ntotal[X] = %d\n", argv[0], ntotal[Z]);
+      break;
+   case 'r':
+      r0 = atof(argv[optind+1]);
+      printf("%s: option -r sets r0 = %f\n", argv[0], r0);
+      break;         	
+   case 'p':
+      if (optind + 3 < argc)    {
+      periodic[X] = atoi(argv[optind+1]);
+      periodic[Y] = atoi(argv[optind+2]);
+      periodic[Z] = atoi(argv[optind+3]);
+      printf("%s: option -p sets periodic[X] = %d, periodic[Y] = %d, periodic[Z] = %d\n", argv[0], periodic[X], periodic[Y], periodic[Z]);
+      optind+=3;
+      } else {
+      
+      fprintf(stderr,"insuffiecent arguments for -p. expected three with spaces either 1(Periodic) or 0(wall) \n");
+      exit(EXIT_FAILURE); 
+      }    
+      break;
+     
     default:
       fprintf(stderr, "Unrecognised option: %s\n", argv[optind]);
       fprintf(stderr, "Usage: %s [-ahv]\n", argv[0]);
@@ -139,13 +179,29 @@ int main(int argc, char ** argv) {
   /* Allocate required number of state objects, and set state
      to zero; initialise indices (position set later) */
 
-  nrequest = colloid_init_vf_n(cs, ah, vf);
+  nrequest = colloid_init_vf_n(cs, ah, r0, vf);
   printf("Volume fraction %7.3f gives %d colloids\n", vf, nrequest);
 
   state = (colloid_state_t *) calloc(nrequest, sizeof(colloid_state_t));
   assert(state != NULL);
 
   for (n = 0; n < nrequest; n++) {
+  
+  if (n == 0) {
+    state[n].index = 1 + n;
+    state[n].rebuild = 1;
+    state[n].a0 = r0;
+    state[n].ah = r0;
+    state[n].q0 = q0;
+    state[n].q1 = q1;
+    state[n].rng = 1 + n;
+    state[n].bc = COLLOID_BC_BBL; // specify the boundary condition for colloids
+    state[n].shape = COLLOID_SHAPE_SPHERE;
+    
+    }
+    
+  else {
+  
     state[n].index = 1 + n;
     state[n].rebuild = 1;
     state[n].a0 = a0;
@@ -155,6 +211,7 @@ int main(int argc, char ** argv) {
     state[n].rng = 1 + n;
     state[n].bc  = COLLOID_BC_BBL;
     state[n].shape = COLLOID_SHAPE_SPHERE;
+  }
   }
 
   if (vf < 0.35) {
@@ -186,7 +243,7 @@ int main(int argc, char ** argv) {
  *
  ****************************************************************************/
 
-int colloid_init_vf_n(cs_t * cs, const double ah, const double vf) {
+int colloid_init_vf_n(cs_t * cs, const double ah, const double r0, const double vf) {
 
   int n, ntotal[3];
   double volume;
@@ -197,9 +254,36 @@ int colloid_init_vf_n(cs_t * cs, const double ah, const double vf) {
   cs_ntotal(cs, ntotal);
 
   volume = ntotal[X]*ntotal[Y]*ntotal[Z];
-  n = vf*volume/(4.0*pi*ah*ah*ah/3.0);
+  printf("ntotal[x] = %d, ntotal[Y] = %d, ntotal[Z] = %d\n", ntotal[X], ntotal[Y], ntotal[Z]);
+  n = 1 + (vf*volume - (4.0*pi*r0*r0*r0/3.0)) /(4.0*pi*ah*ah*ah/3.0);
 
   return n;
+}
+
+/****************************************************************************
+ *
+ *  colloid_calc_vf
+ *
+ *  How many colloids of given ah make up a volume fraction of vf?
+ *
+ ****************************************************************************/
+
+double colloid_calc_vf(cs_t * cs, const double ah, const double r0, const int nb) {
+
+  int ntotal[3];
+  double vf, volume;
+  PI_DOUBLE(pi);
+
+  assert(cs);
+
+  cs_ntotal(cs, ntotal);
+  
+  volume = ntotal[X]*ntotal[Y]*ntotal[Z];
+  //printf("ntotal[x] = %d, ntotal[Y] = %d, ntotal[Z] = %d\n", ntotal[X], ntotal[Y], ntotal[Z]);
+  //n = vf*volume/(4.0*pi*ah*ah*ah/3.0);
+  vf = ((nb -1)*(4.0*pi*ah*ah*ah/3.0) + 1 * (4.0*pi*r0*r0*r0/3.0) ) / volume;
+
+  return vf;
 }
 
 /****************************************************************************
@@ -312,7 +396,7 @@ int colloid_init_mc(cs_t * cs, int nc, colloid_state_t * state, double dh) {
   int ntotal[3];
   int ok;
 
-  double ah_ref;
+  double ah_ref, new_vf, r_rob;
   double d_ci, d_cc, d_bndry, rsqrt3 = 1.0/sqrt(3.0);
   double ** rbcc;
   int * r, * s;
@@ -320,12 +404,15 @@ int colloid_init_mc(cs_t * cs, int nc, colloid_state_t * state, double dh) {
   double rtrial[3], rsep[3], dr;
   double eno, enn, boltzfac, ran;
   double delta;
+  
+  char response; // variable for user input
 
   assert(cs);
   cs_ntotal(cs, ntotal);
 
-  /* assuming there is one colloid, take radius */
-  ah_ref = state[0].ah;
+  /* assuming there is one colloid, take radius  here the refernce radiusis taken from seconf index particle, as first is robot*/
+  ah_ref = state[1].ah;
+  r_rob = state[0].ah; /* radius of robot */
 
   d_ci = 2.0*ah_ref + dh;    // distance corner site - intertitial site
   d_cc = 2.0*rsqrt3 * d_ci;  // distance corner site - corner site
@@ -431,17 +518,48 @@ int colloid_init_mc(cs_t * cs, int nc, colloid_state_t * state, double dh) {
   }
 
   n = 0;
+  
+  
+  // new section added -Jain 
+  // reassigns the n to match the possible arrangement
+  if (nc > nbcc){
+   
+   new_vf = colloid_calc_vf(cs, ah_ref, r_rob, nbcc);
+   printf("The required number particles %d exceeds available lattice units %d \n",nc, nbcc);
+   printf("possible volume fraction - %f\nDo you want to reassign number particles ? (y/n) \n",new_vf);
+   //scanf(" %c",&response);
+   
+   if(scanf(" %c", &response) != 1){
+   
+   printf("error reading the input \n");
+   exit(1);
+   }
+   
+   if (response == 'y' || response == 'Y'){
+   nc = nbcc;
+   printf(" number of colloids reduced to %d.\n",nc);
+   }
+   else{
+   printf("exiting.....\n");
+   exit(1);
+   }
+   }
+   
 
   // reservoir sampling if nc < nbcc
   for (ii = 0; ii < nbcc; ii++) s[ii] = ii; 
-  for (ij = 0; ij < nc; ij++) r[ij] = s[ij]; 
+  /*changed nc to nbcc else memory issue coming due to indexing out of the limit of the variable. new section- Jain
+   added a if statement to bring down the nc to nbcc so a possible solution can be found. but have changed nc 
+   to nbcc to prevent memory issues
+  */
+  for (ij = 0; ij < nbcc; ij++) r[ij] = s[ij];
 
   for (ii = nc; ii < nbcc; ii++) {
     ik = rand() % ii;
     if (ik < nc) r[ik] = s[ii]; 
   }
 
-  for (ik = 0; ik < nc; ik++) {
+  for (ik = 0; ik < nc; ik++) {   // keep nc if nc < nbcc
     state[ik].r[X] = rbcc[r[ik]][0];
     state[ik].r[Y] = rbcc[r[ik]][1];
     state[ik].r[Z] = rbcc[r[ik]][2];
@@ -563,7 +681,6 @@ int colloid_init_mc(cs_t * cs, int nc, colloid_state_t * state, double dh) {
   return nactual;
 
 }
-
 /****************************************************************************
  *
  *  colloid_init_write_file

@@ -408,10 +408,16 @@ int colloids_update_forces_external(colloids_info_t * cinfo,
 
 	for (; pc; pc = pc->next) {
 
-	  /* All particles have gravity */
+	  /* All particles have gravity 
+	  pc->force[X] += cinfo->fgravity[X];
+	  pc->force[Y] += cinfo->fgravity[Y];
+	  pc->force[Z] += cinfo->fgravity[Z]; */
+	  if(pc->s.index==1){
+	  /* only particle with inex 1 experiences gravity*/
 	  pc->force[X] += cinfo->fgravity[X];
 	  pc->force[Y] += cinfo->fgravity[Y];
 	  pc->force[Z] += cinfo->fgravity[Z];
+          }
 
           if (pc->s.bc == COLLOID_BC_SUBGRID) continue;
 
@@ -469,7 +475,7 @@ int colloids_update_forces_fluid_gravity(colloids_info_t * cinfo,
     /* Force per fluid node to balance is... */
 
     for (ia = 0; ia < 3; ia++) {
-      f[ia] = -cinfo->fgravity[ia]*rvolume*nc;
+      f[ia] = -cinfo->fgravity[ia]*rvolume*1;
     }
 
     physics_fbody_set(phys, f);

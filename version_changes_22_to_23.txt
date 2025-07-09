@@ -1,0 +1,23 @@
+version 0.23.1 updated with necessary changes from version 0.22.1
+
+
+Made version 0.23.1 compatable for multiparticle initialisation when one of the particle(index=0) is affected by gravity.
+now the version 0.23.1 can initialize obstacles of one size and robot(force driven) of another size.
+AT THE TIME OF THIS COMMIT master(branch) WAS VERSION 0.23.1
+Changes were made in three files:
+
+	1. src/interaction.c - switched off force for all particles except for particle of index 0
+			       * if statement added in function colloids_update_forces_external()
+			       * force balance fro gravity affected fluids was corrected for a single particle in function colloids_update_forces_fluid_gravity
+
+
+	2. util/extract_colloids.c - made the changes so that it can extract config.cds.init.001-001
+
+	3. util/colloid_init.c - number of changes were made.
+
+				 * made switch block bigger to incorporate different size of obastcle- robot pair, appy PBC as well as walls.
+				 * made the command line interactive i.e shows whether the requested volume fraction is possible or not and calculates the maximum possible 
+				   several functions, print statements were added a detail of which is not possible in this text file , 
+				   but could get it if diff command is used on original version 0.23.1 and the modified branch 0.23.1	
+				 * calculation of monte carlo sites was done for nbcc rather than nc, line number 545, to resolve memory issue due toindex out of range when nc < nbcc.
+
