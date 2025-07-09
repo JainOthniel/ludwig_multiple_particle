@@ -260,8 +260,7 @@ int do_test_device1(pe_t * pe) {
   ntpb.x = 1;
 
   tdpLaunchKernel(do_test_field_kernel1, nblk, ntpb, 0, 0, phi->target);
-  tdpAssert( tdpPeekAtLastError() );
-  tdpAssert( tdpDeviceSynchronize() );
+  tdpDeviceSynchronize();
 
   field_free(phi);
   cs_free(cs);

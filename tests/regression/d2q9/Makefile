@@ -2,23 +2,17 @@
 #
 #  Makefile
 #
+#  D2Q9 regression tests
+#
 ###############################################################################
 
 include ../../../Makefile.mk
 
 PAR=${LAUNCH_MPIRUN_CMD}
 
-SOURCES = $(wildcard *.inp)
-LOGS    = ${SOURCES:.inp=.new}
-
-test:
-	$(MAKE) -s clean
-	$(MAKE) -s logs
-	@echo End of tests.
-
-logs:	$(LOGS)
-
-%.new:	%.inp
-	../../test.sh $< "" "${PAR}"
+d2q9:
+	@echo "TEST --> regression tests (d2q9)"
+	inputs='serial*inp'; \
+	for file in $$inputs; do ../../test.sh $$file "" "$(PAR)"; done
 clean:
-	rm -f *new test-diff* *meta *001-001
+	rm -f *new test-diff* input

@@ -1,33 +1,6 @@
 
 ### Changes
 
-version 0.23.1
-
-- Bug fix: https://github.com/ludwig-cf/ludwig/issues/360
-  Colloid input from files in pre version 20 formats was incompletely
-  translated leaving some colloids in an incorrect state in which the
-  colloid was present but had no boundary conditions. This is fixed.
-  The utility programs for generating colloid files have been updated
-  to be consistent with the current format.
-
-version 0.23.0
-
-- Action required. Changes to input file keys related to frequency of i/o.
-  Please see https://ludwig.epcc.ed.ac.uk/outputs/fluid.html
-  for a list of new keys to specify output frequenxy. These
-  provide a more flexible and consistent framework for
-  specifying output for all lattice quantities.
-  Old forms will be trapped at run time with a request to
-  update your input file. [Issue 350]
-
-- A number of GPU features have been implemented including the
-  lattice distribution halo swap and the Lees Edwards plane
-  transformation. [Issues 311, 316, 343]
-
-- Bug fix [Issue 342] Colloid wettability (free energy parameters
-  were being erroneously replaced in the gradient calculation.
-  Colloid wetting factors are now taken into account correctly.
-
 version 0.22.0
 
 - Removal of original "ansi" I/O (Issue 284).

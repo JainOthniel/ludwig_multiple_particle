@@ -58,7 +58,7 @@ int io_metadata_create(cs_t * cs,
 
  err:
 
-  free(meta);
+  if (meta) free(meta);
   return -1;
 }
 

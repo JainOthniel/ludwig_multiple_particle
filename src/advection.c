@@ -191,7 +191,7 @@ __host__ int advflux_create(pe_t * pe, cs_t * cs, lees_edw_t * le, int nf,
 
   /* Allocate target copy of structure (or alias) */
 
-  tdpAssert( tdpGetDeviceCount(&ndevice) );
+  tdpGetDeviceCount(&ndevice);
 
   if (ndevice == 0) {
     obj->target = obj;
@@ -260,30 +260,24 @@ __host__ int advflux_free(advflux_t * obj) {
 
   assert(obj);
 
-  tdpAssert( tdpGetDeviceCount(&ndevice) );
+  tdpGetDeviceCount(&ndevice);
 
   if (ndevice > 0) {
     if (obj->le == NULL) {
-      tdpAssert( tdpMemcpy(&tmp, &obj->target->fx, sizeof(double *),
-			   tdpMemcpyDeviceToHost) );
-      tdpAssert( tdpFree(tmp) );
+    tdpMemcpy(&tmp, &obj->target->fx, sizeof(double *), tdpMemcpyDeviceToHost);
+    tdpFree(tmp);
     }
     else {
-      tdpAssert( tdpMemcpy(&tmp, &obj->target->fe, sizeof(double *),
-			   tdpMemcpyDeviceToHost) );
-      tdpAssert( tdpFree(tmp) );
-      tdpAssert( tdpMemcpy(&tmp, &obj->target->fw, sizeof(double *),
-			   tdpMemcpyDeviceToHost) );
-      tdpAssert( tdpFree(tmp) );
+    tdpMemcpy(&tmp, &obj->target->fe, sizeof(double *), tdpMemcpyDeviceToHost);
+    tdpFree(tmp);
+    tdpMemcpy(&tmp, &obj->target->fw, sizeof(double *), tdpMemcpyDeviceToHost);
+    tdpFree(tmp);
     }
-
-    tdpAssert( tdpMemcpy(&tmp, &obj->target->fy, sizeof(double *),
-			 tdpMemcpyDeviceToHost) );
-    tdpAssert( tdpFree(tmp) );
-    tdpAssert( tdpMemcpy(&tmp, &obj->target->fz, sizeof(double *),
-			 tdpMemcpyDeviceToHost) );
-    tdpAssert( tdpFree(tmp) );
-    tdpAssert( tdpFree(obj->target) );
+    tdpMemcpy(&tmp, &obj->target->fy, sizeof(double *), tdpMemcpyDeviceToHost);
+    tdpFree(tmp);
+    tdpMemcpy(&tmp, &obj->target->fz, sizeof(double *), tdpMemcpyDeviceToHost);
+    tdpFree(tmp);
+    tdpFree(obj->target);
   }
 
   if (obj->le == NULL) {
@@ -379,7 +373,7 @@ __host__ int advflux_memcpy(advflux_t * adv, tdpMemcpyKind flag) {
 
   assert(adv);
 
-  tdpAssert( tdpGetDeviceCount(&ndevice) );
+  tdpGetDeviceCount(&ndevice);
 
   if (ndevice == 0) {
     /* Ensure we alias */

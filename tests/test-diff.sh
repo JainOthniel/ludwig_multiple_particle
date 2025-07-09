@@ -101,7 +101,6 @@ sed -i~ '/GPU\ INFO/d' test-diff-tmp.ref
 sed -i~ '/SIMD\ vector/d' test-diff-tmp.ref
 sed -i~ '/Start time/d' test-diff-tmp.ref
 sed -i~ '/End time/d' test-diff-tmp.ref
-sed -i~ '/Halo type/d' test-diff-tmp.ref
 
 sed '/call)/d' $2 > test-diff-tmp.log
 sed -i~ '/calls)/d' test-diff-tmp.log
@@ -126,7 +125,6 @@ sed -i~ '/GPU\ INFO/d' test-diff-tmp.log
 sed -i~ '/SIMD\ vector/d' test-diff-tmp.log
 sed -i~ '/Start time/d' test-diff-tmp.log
 sed -i~ '/End time/d' test-diff-tmp.log
-sed -i~ '/Halo type/d' test-diff-tmp.log
 
 # Allow different decompositions ...
 # The strategy is that we can ignore these simple quantities, as

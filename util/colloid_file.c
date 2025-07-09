@@ -98,10 +98,7 @@ int main(int argc, char ** argv) {
     state.r[2] = 1.0; /* Z position */
     state.rng  = index;
 
-    state.bc    = COLLOID_BC_BBL;
-    state.shape = COLLOID_SHAPE_SPHERE;
-
-      if (binary) {
+    if (binary) {
       colloid_state_write_binary(state, fp);
     }
     else {

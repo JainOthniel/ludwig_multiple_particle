@@ -7,7 +7,7 @@
  *  Edinburgh Soft Matter and Statistical Physics Group and
  *  Edinburgh Parallel Computing Centre
  *
- *  (c) 2009-2024 The University of Edinburgh
+ *  (c) 2009-2022 The University of Edinburgh
  *
  *  Contributing authors:
  *  Kevin Stratford (kevin@epcc.ed.ac.uk)
@@ -538,8 +538,7 @@ __host__ int do_test_coords_device1(pe_t * pe) {
   ntpb.x = 1;
 
   tdpLaunchKernel(do_test_coords_kernel1, nblk, ntpb, 0, 0, cstarget);
-  tdpAssert( tdpPeekAtLastError() );
-  tdpAssert( tdpDeviceSynchronize() );
+  tdpDeviceSynchronize();
 
   cs_free(cs);
 
@@ -726,7 +725,7 @@ int test_cs_from_json(pe_t * pe) {
   assert(pe);
 
   {
-    /* Just about the bare minimum of information */
+    /* Just about the bare minumum of information */
 
     cJSON * json = cJSON_Parse("{"
 			       "\"options\": {"

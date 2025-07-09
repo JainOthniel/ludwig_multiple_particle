@@ -57,7 +57,7 @@ int io_impl_mpio_create(const io_metadata_t * metadata,
   return 0;
 
  err:
-  free(mpio);
+  if (mpio) free(mpio);
 
   return -1;
 }

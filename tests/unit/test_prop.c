@@ -7,9 +7,9 @@
  *  Edinburgh Soft Matter and Statistical Physics Group and
  *  Edinburgh Parallel Computing Centre
  *
- *  (c) 2010-2025 The University of Edinburgh
+ *  (c) 2010-2022 Ths University of Edinburgh
  *
- *  Contributing authors:
+ *  Contributing authors: 
  *  Kevin Stratford (kevin@epcc.ed.ac.uk)
  *
  *****************************************************************************/
@@ -25,10 +25,10 @@
 #include "propagation.h"
 #include "tests.h"
 
-int do_test_velocity(pe_t * pe, cs_t * cs, int ndist,
-		     lb_halo_enum_t halo);
-int do_test_source_destination(pe_t * pe, cs_t * cs, int ndist,
-			       lb_halo_enum_t halo);
+__host__ int do_test_velocity(pe_t * pe, cs_t * cs, int ndist,
+			      lb_halo_enum_t halo);
+__host__ int do_test_source_destination(pe_t * pe, cs_t * cs, int ndist,
+					lb_halo_enum_t halo);
 
 /*****************************************************************************
  *
@@ -38,6 +38,7 @@ int do_test_source_destination(pe_t * pe, cs_t * cs, int ndist,
 
 int test_lb_prop_suite(void) {
 
+  int ndevice = 0;
   pe_t * pe = NULL;
   cs_t * cs = NULL;
 
@@ -45,20 +46,20 @@ int test_lb_prop_suite(void) {
   cs_create(pe, &cs);
   cs_init(cs);
 
-  {
-    int ndist = 1;
-    do_test_velocity(pe, cs, ndist, LB_HALO_FULL);
-    do_test_velocity(pe, cs, ndist, LB_HALO_REDUCED);
-    do_test_source_destination(pe, cs, ndist, LB_HALO_FULL);
-    do_test_source_destination(pe, cs, ndist, LB_HALO_REDUCED);
+  tdpGetDeviceCount(&ndevice);
+
+  do_test_velocity(pe, cs, 1, LB_HALO_TARGET);
+  do_test_velocity(pe, cs, 2, LB_HALO_TARGET);
+  if (ndevice == 0) {
+    do_test_velocity(pe, cs, 1, LB_HALO_OPENMP_FULL);
+    do_test_velocity(pe, cs, 1, LB_HALO_OPENMP_REDUCED);
   }
 
-  {
-    int ndist = 2;
-    do_test_velocity(pe, cs, ndist, LB_HALO_FULL);
-    do_test_velocity(pe, cs, ndist, LB_HALO_REDUCED);
-    do_test_source_destination(pe, cs, ndist, LB_HALO_FULL);
-    do_test_source_destination(pe, cs, ndist, LB_HALO_REDUCED);
+  do_test_source_destination(pe, cs, 1, LB_HALO_TARGET);
+  do_test_source_destination(pe, cs, 2, LB_HALO_TARGET);
+  if (ndevice == 0) {
+    do_test_source_destination(pe, cs, 1, LB_HALO_OPENMP_FULL);
+    do_test_source_destination(pe, cs, 1, LB_HALO_OPENMP_REDUCED);
   }
 
   pe_info(pe, "PASS     ./unit/test_prop\n");
@@ -157,8 +158,8 @@ int do_test_velocity(pe_t * pe, cs_t * cs, int ndist, lb_halo_enum_t halo) {
  *  Check each element of the distribution has propagated exactly one
  *  lattice spacing in the appropriate direction.
  *
- *  We use the global index as the test of the source.
- *
+ *  We use the global index as the test of the soruce.
+ *  
  *****************************************************************************/
 
 int do_test_source_destination(pe_t * pe, cs_t * cs, int ndist,

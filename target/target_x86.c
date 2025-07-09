@@ -7,7 +7,7 @@
  *  Edinburgh Soft Matter and Statistical Physics Group and
  *  Edinburgh Parallel Computing Centre
  *
- *  (c) 2018-2024 The University of Edinburgh
+ *  (c) 2018-2023 The University of Edinburgh
  *
  *  Contributing authors:
  *  Alan Gray (Late of this parish)
@@ -32,6 +32,7 @@ dim3 blockDim = {1, 1, 1};
 
 static tdpError_t lastError = tdpSuccess;
 static char lastErrorString[BUFSIZ] = "";
+static int staticStream;
 
 /* Utilities */
 
@@ -250,9 +251,13 @@ tdpError_t tdpGetDeviceCount(int * device) {
 
   *device = 0;
 
+#ifdef FAKE_DEVICE /* "Fake" device */
+  *device = 1;
+#endif
+
   /* Strictly, we should return tdpErrorInsufficientDriver or ... */
 
-  return tdpSuccess;
+  return tdpErrorNoDevice;
 }
 
 /*****************************************************************************
@@ -620,7 +625,7 @@ tdpError_t tdpStreamCreate(tdpStream_t * stream) {
 
   error_return_if(stream == NULL, tdpErrorInvalidValue);
 
-  *stream = 0;
+  *stream = &staticStream;
 
   return tdpSuccess;
 }
@@ -633,7 +638,7 @@ tdpError_t tdpStreamCreate(tdpStream_t * stream) {
 
 tdpError_t tdpStreamDestroy(tdpStream_t stream) {
 
-  error_return_if(stream != 0, tdpErrorInvalidResourceHandle);
+  error_return_if(stream != &staticStream, tdpErrorInvalidResourceHandle);
 
   return tdpSuccess;
 }
@@ -646,7 +651,7 @@ tdpError_t tdpStreamDestroy(tdpStream_t stream) {
 
 tdpError_t tdpStreamSynchronize(tdpStream_t stream) {
 
-  error_return_if(stream != 0, tdpErrorInvalidResourceHandle);
+  error_return_if(stream != &staticStream, tdpErrorInvalidResourceHandle);
 
   /* Success */
 

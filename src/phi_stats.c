@@ -195,7 +195,7 @@ int stats_field_q_reduce(field_t * field, map_t * map, int nxx, sum_t * sum,
     MPI_Type_free(&dt);
   }
 
-  tdpAssert( tdpFree(dsum) );
+  tdpFree(dsum);
 
   return 0;
 }

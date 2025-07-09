@@ -86,7 +86,7 @@ __host__ int wall_create(pe_t * pe, cs_t * cs, map_t * map, lb_t * lb,
 
   /* Target copy */
 
-  tdpAssert( tdpGetDeviceCount(&ndevice) );
+  tdpGetDeviceCount(&ndevice);
 
   if (ndevice == 0) {
     wall->target = wall;
@@ -94,11 +94,11 @@ __host__ int wall_create(pe_t * pe, cs_t * cs, map_t * map, lb_t * lb,
   else {
     wall_param_t * tmp = NULL;
 
-    tdpAssert( tdpMalloc((void **) &wall->target, sizeof(wall_t)) );
-    tdpAssert( tdpMemset(wall->target, 0, sizeof(wall_t)) );
+    tdpMalloc((void **) &wall->target, sizeof(wall_t));
+    tdpMemset(wall->target, 0, sizeof(wall_t));
     tdpGetSymbolAddress((void **) &tmp, tdpSymbol(static_param));
-    tdpAssert( tdpMemcpy(&wall->target->param, &tmp, sizeof(wall_param_t *),
-			 tdpMemcpyHostToDevice) );
+    tdpMemcpy(&wall->target->param, &tmp, sizeof(wall_param_t *),
+	      tdpMemcpyHostToDevice);
   }
 
   *p = wall;
@@ -119,51 +119,50 @@ __host__ int wall_free(wall_t * wall) {
   if (wall->target != wall) {
     {
       int * tmp = NULL;
-      tdpAssert( tdpMemcpy(&tmp, &wall->target->linki, sizeof(int *),
-			   tdpMemcpyDeviceToHost) );
-      tdpAssert( tdpFree(tmp) );
-      tdpAssert( tdpMemcpy(&tmp, &wall->target->linkj, sizeof(int *),
-			   tdpMemcpyDeviceToHost) );
-      tdpAssert( tdpFree(tmp) );
-      tdpAssert( tdpMemcpy(&tmp, &wall->target->linkp, sizeof(int *),
-			   tdpMemcpyDeviceToHost) );
-      tdpAssert( tdpFree(tmp) );
-      tdpAssert( tdpMemcpy(&tmp, &wall->target->linku, sizeof(int *),
-			   tdpMemcpyDeviceToHost) );
-      tdpAssert( tdpFree(tmp) );
+      tdpMemcpy(&tmp, &wall->target->linki, sizeof(int *),
+		tdpMemcpyDeviceToHost);
+      tdpFree(tmp);
+      tdpMemcpy(&tmp, &wall->target->linkj, sizeof(int *),
+		tdpMemcpyDeviceToHost);
+      tdpFree(tmp);
+      tdpMemcpy(&tmp, &wall->target->linkp, sizeof(int *),
+		tdpMemcpyDeviceToHost);
+      tdpFree(tmp);
+      tdpMemcpy(&tmp, &wall->target->linku, sizeof(int *),
+		tdpMemcpyDeviceToHost);
+      tdpFree(tmp);
     }
     /* Release slip stuff */
     if (wall->param->slip.active) {
       int * tmp = NULL;
       tdpAssert(tdpMemcpy(&tmp, &wall->target->linkk, sizeof(int *),
 			  tdpMemcpyDeviceToHost));
-      tdpAssert( tdpFree(tmp) );
+      tdpFree(tmp);
     }
     if (wall->param->slip.active) {
       int8_t * tmp = NULL;
       tdpAssert(tdpMemcpy(&tmp, &wall->target->linkq, sizeof(int8_t *),
 			  tdpMemcpyDeviceToHost));
-      tdpAssert( tdpFree(tmp) );
+      tdpFree(tmp);
       tdpAssert(tdpMemcpy(&tmp, &wall->target->links, sizeof(int8_t *),
 			  tdpMemcpyDeviceToHost));
-      tdpAssert( tdpFree(tmp) );
+      tdpFree(tmp);
     }
-    tdpAssert( tdpFree(wall->target) );
+    tdpFree(wall->target);
   }
 
   cs_free(wall->cs);
   free(wall->param);
 
   /* slip quantities */
+  if (wall->linkk) free(wall->linkk);
+  if (wall->linkq) free(wall->linkq);
+  if (wall->links) free(wall->links);
 
-  free(wall->linkk);
-  free(wall->linkq);
-  free(wall->links);
-
-  free(wall->linki);
-  free(wall->linkj);
-  free(wall->linkp);
-  free(wall->linku);
+  if (wall->linki) free(wall->linki);
+  if (wall->linkj) free(wall->linkj);
+  if (wall->linkp) free(wall->linkp);
+  if (wall->linku) free(wall->linku);
 
   free(wall);
 
@@ -403,7 +402,7 @@ __host__ int wall_init_boundaries(wall_t * wall, wall_init_enum_t init) {
   assert(wall);
   assert(wall->lb);
 
-  tdpAssert( tdpGetDeviceCount(&ndevice) );
+  tdpGetDeviceCount(&ndevice);
 
   if (init == WALL_INIT_ALLOCATE) {
     nlink = imax(1, wall->nlink); /* Avoid zero-sized allocations */
@@ -422,18 +421,18 @@ __host__ int wall_init_boundaries(wall_t * wall, wall_init_enum_t init) {
     if (wall->linku == NULL) pe_fatal(wall->pe,"calloc(wall->linku) failed\n");
     if (ndevice > 0) {
       int tmp;
-      tdpAssert( tdpMalloc((void **) &tmp, wall->nlink*sizeof(int)) );
-      tdpAssert( tdpMemcpy(&wall->target->linki, &tmp, sizeof(int *),
-			   tdpMemcpyHostToDevice) );
-      tdpAssert( tdpMalloc((void **) &tmp, wall->nlink*sizeof(int)) );
-      tdpAssert( tdpMemcpy(&wall->target->linkj, &tmp, sizeof(int *),
-			   tdpMemcpyHostToDevice) );
-      tdpAssert( tdpMalloc((void **) &tmp, wall->nlink*sizeof(int)) );
-      tdpAssert( tdpMemcpy(&wall->target->linkp, &tmp, sizeof(int *),
-			   tdpMemcpyHostToDevice) );
-      tdpAssert( tdpMalloc((void **) &tmp, wall->nlink*sizeof(int)) );
-      tdpAssert( tdpMemcpy(&wall->target->linku, &tmp, sizeof(int *),
-			   tdpMemcpyHostToDevice) );
+      tdpMalloc((void **) &tmp, wall->nlink*sizeof(int));
+      tdpMemcpy(&wall->target->linki, &tmp, sizeof(int *),
+		tdpMemcpyHostToDevice);
+      tdpMalloc((void **) &tmp, wall->nlink*sizeof(int));
+      tdpMemcpy(&wall->target->linkj, &tmp, sizeof(int *),
+		tdpMemcpyHostToDevice);
+      tdpMalloc((void **) &tmp, wall->nlink*sizeof(int));
+      tdpMemcpy(&wall->target->linkp, &tmp, sizeof(int *),
+		tdpMemcpyHostToDevice);
+      tdpMalloc((void **) &tmp, wall->nlink*sizeof(int));
+      tdpMemcpy(&wall->target->linku, &tmp, sizeof(int *),
+		tdpMemcpyHostToDevice);
     }
   }
 
@@ -505,7 +504,7 @@ __host__ int wall_init_boundaries_slip(wall_t * wall) {
   assert(wall->cs);
   assert(wall->map);
 
-  tdpAssert( tdpGetDeviceCount(&ndevice) );
+  tdpGetDeviceCount(&ndevice);
 
   if (wall->param->slip.active) {
 
@@ -526,18 +525,18 @@ __host__ int wall_init_boundaries_slip(wall_t * wall) {
     /* Allocate device memory */
     if (ndevice > 0) {
       int tmp;
-      tdpAssert( tdpMalloc((void **) &tmp, nlink*sizeof(int)) );
-      tdpAssert (tdpMemcpy(&wall->target->linkk, &tmp, sizeof(int *),
-			   tdpMemcpyHostToDevice) );
+      tdpMalloc((void **) &tmp, nlink*sizeof(int));
+      tdpMemcpy(&wall->target->linkk, &tmp, sizeof(int *),
+		tdpMemcpyHostToDevice);
     }
     if (ndevice > 0) {
       int8_t tmp;
-      tdpAssert( tdpMalloc((void **) &tmp, nlink*sizeof(int8_t)) );
-      tdpAssert( tdpMemcpy(&wall->target->linkq, &tmp, sizeof(int8_t *),
-			   tdpMemcpyHostToDevice) );
-      tdpAssert( tdpMalloc((void **) &tmp, nlink*sizeof(int8_t)) );
-      tdpAssert( tdpMemcpy(&wall->target->links, &tmp, sizeof(int8_t *),
-			   tdpMemcpyHostToDevice) );
+      tdpMalloc((void **) &tmp, nlink*sizeof(int8_t));
+      tdpMemcpy(&wall->target->linkq, &tmp, sizeof(int8_t *),
+		tdpMemcpyHostToDevice);
+      tdpMalloc((void **) &tmp, nlink*sizeof(int8_t));
+      tdpMemcpy(&wall->target->links, &tmp, sizeof(int8_t *),
+		tdpMemcpyHostToDevice);
     }
 
     /* For each existing fluid-to-solid link i->j with cv[p] ... */
@@ -778,7 +777,7 @@ __host__ int wall_memcpy(wall_t * wall, tdpMemcpyKind flag) {
 
   assert(wall);
 
-  tdpAssert( tdpGetDeviceCount(&ndevice) );
+  tdpGetDeviceCount(&ndevice);
 
   if (ndevice == 0) {
     assert(wall->target == wall);
@@ -923,8 +922,7 @@ __host__ int wall_set_wall_distributions(wall_t * wall) {
   tdpLaunchKernel(wall_setu_kernel, nblk, ntpb, 0, 0,
 		  wall->target, wall->lb->target);
 
-  tdpAssert( tdpPeekAtLastError() );
-  tdpAssert( tdpDeviceSynchronize() );
+  tdpDeviceSynchronize();
 
   return 0;
 }
@@ -1323,17 +1321,17 @@ __host__ int wall_momentum(wall_t * wall, double f[3]) {
    * the host via wall_momentum_add() and others are on the
    * device. */
 
-  tdpAssert( tdpGetDeviceCount(&ndevice) );
+  tdpGetDeviceCount(&ndevice);
 
   if (ndevice > 0) {
-    tdpAssert( tdpMemcpy(ftmp, wall->target->fnet, 3*sizeof(double),
-			 tdpMemcpyDeviceToHost) );
+    tdpMemcpy(ftmp, wall->target->fnet, 3*sizeof(double),
+	      tdpMemcpyDeviceToHost);
     wall->fnet[X] += ftmp[X];
     wall->fnet[Y] += ftmp[Y];
     wall->fnet[Z] += ftmp[Z];
     ftmp[X] = 0.0; ftmp[Y] = 0.0; ftmp[Z] = 0.0;
-    tdpAssert( tdpMemcpy(wall->target->fnet, ftmp, 3*sizeof(double),
-			 tdpMemcpyHostToDevice) );
+    tdpMemcpy(wall->target->fnet, ftmp, 3*sizeof(double),
+	      tdpMemcpyHostToDevice);
   }
 
   /* Return the current net */

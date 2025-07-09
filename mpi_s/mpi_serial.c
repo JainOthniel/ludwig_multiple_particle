@@ -24,13 +24,10 @@
  *****************************************************************************/
 
 #include <assert.h>
-#include <errno.h>
-#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
 
 /* Use clock() only as a last resort in serial (no threads) */
 
@@ -61,20 +58,16 @@ typedef struct internal_file_view_s file_t;
 struct internal_data_type_s {
   MPI_Datatype handle;       /* User space handle [in suitable range] */
   int          bytes;        /* sizeof */
-  int          commit;       /* Committed? */
+  int          commit;       /* Commited? */
   int          flavour;      /* Contiguous types only at present */
-  MPI_Aint     lb;           /* Lower bound argument */
-  int          stride;       /* Stride argument */
 };
 
 struct internal_file_view_s {
-  MPI_Comm comm;                /* File communicator */
   FILE * fp;                    /* file pointer */
   MPI_Offset   disp;            /* e.g., from MPI_File_set_view() */
   MPI_Datatype etype;
   MPI_Datatype filetype;
   char datarep[MPI_MAX_DATAREP_STRING];
-  char errorstr[MPI_MAX_ERROR_STRING];
 };
 
 typedef struct mpi_info_s mpi_info_t;
@@ -83,305 +76,28 @@ struct mpi_info_s {
   int initialised;               /* MPI initialised */
   int ncart;                     /* Number of Cartesian communicators */
   int period[MAX_CART_COMM][3];  /* Periodic Cartesisan per communicator */
-  int reorder[MAX_CART_COMM];    /* Reorder arguments per Cartesian comm */
   int ndatatype;                 /* Current number of data types */
   data_t dt[MAX_USER_DT];        /* Internal information per data type */
   int ndatatypelast;             /* Current free list extent */
   int dtfreelist[MAX_USER_DT];   /* Free list */
 
   file_t filelist[MAX_USER_FILE]; /* MPI_File information for open files */
-
-  /* The following arguments are recorded but not used */
-  int key;
-  int commute;
 };
 
-static mpi_info_t * mpi_info_ = NULL;
+static mpi_info_t * mpi_info = NULL;
 
 static void mpi_copy(void * send, void * recv, int count, MPI_Datatype type);
 static int mpi_sizeof(MPI_Datatype type);
 static int mpi_sizeof_user(MPI_Datatype handle);
+static int mpi_is_valid_comm(MPI_Comm comm);
 static int mpi_data_type_add(mpi_info_t * ctxt, const data_t * dt,
 			     MPI_Datatype * newtype);
 static int mpi_data_type_free(mpi_info_t * ctxt, MPI_Datatype * handle);
 static int mpi_data_type_handle(mpi_info_t * ctxt, MPI_Datatype handle);
-static int mpi_datatype_intrinsic(MPI_Datatype dt);
-static int mpi_datatype_user(MPI_Datatype dt);
 
 static MPI_File mpi_file_handle_retain(mpi_info_t * ctxt, FILE * fp);
 static FILE *   mpi_file_handle_release(mpi_info_t * ctxt, MPI_File handle);
 static FILE *   mpi_file_handle_to_fp(mpi_info_t * info, MPI_File handle);
-
-/* Detect various errors */
-
-static int mpi_err_amode(int amode);
-static int mpi_err_arg(int arg);
-static int mpi_err_buffer(const void * buf);
-static int mpi_err_comm(MPI_Comm comm);
-static int mpi_err_count(int count);
-static int mpi_err_datatype(MPI_Datatype dt);
-static int mpi_err_errhandler(MPI_Errhandler errhandler);
-static int mpi_err_file(MPI_File file);
-static int mpi_err_info(MPI_Info info);
-static int mpi_err_op(MPI_Op op);
-static int mpi_err_rank(int rank);
-static int mpi_err_root(int root);
-static int mpi_err_tag(int tag);
-
-/* In principle, the errhandler is registered against a comm, file, etc */
-/* At the moment, we have only two ... */
-
-/* typedef MPI_Comm_errhandler_function(MPI_Comm * comm, int * ierr, ...) */
-/* typdeef MPI_File_errhandler_function(MPI_File * fh,   int * ierr, ...) */
-
-static void mpi_comm_errors_are_fatal(MPI_Comm * comm, int * ifail, ...);
-static void mpi_file_errors_return(MPI_File * file, int * ifail, ...);
-
-#define ERR_IF_MPI_NOT_INITIALISED(fn)					\
-  {									\
-    if (mpi_info_ == NULL) {						\
-      /* Always illegal; abort */					\
-      printf("The %s function was called before either MPI_Init() or"	\
-	     "MPI_Init_thread(). This is illegal.", fn);		\
-      exit(-1);								\
-    }									\
-  }
-
-/* Macros for argument checking expected to be in a routine of the form: */
-/*
- * {
- *   int ifail = MPI_SUCCESS;
- *   MPI_Com self = MPI_COMM_SELF;
- *
- *   MACRO(self, ...);
- *
- *   err:
- *   return ifail;
- * }
- *   The comm and file arguments of the macro must be lvalues, as the address
- *   is taken to call the error handler.
- */
-
-#define ERR_IF_COMM_MPI_ERR_COMM(comm, fn)				\
-  {									\
-    ifail = mpi_err_comm(comm);						\
-    mpi_comm_errors_are_fatal(&comm, &ifail, "%s: invalid comm", fn);	\
-    if (ifail != MPI_SUCCESS) goto err;					\
-  }
-
-#define ERR_IF_COMM_MPI_ERR_BUFFER(comm, buf, fn)			\
-  {									\
-    ifail = mpi_err_buffer(buf);					\
-    mpi_comm_errors_are_fatal(&comm, &ifail, "%s: invalid buffer", fn); \
-    if (ifail != MPI_SUCCESS) goto err;					\
-  }
-
-#define ERR_IF_COMM_MPI_ERR_COUNT(comm, count, fn)			\
-  {									\
-    ifail = mpi_err_count(count);					\
-    mpi_comm_errors_are_fatal(&comm, &ifail, "%s, invalid count", fn);	\
-    if (ifail != MPI_SUCCESS) goto err;					\
-  }
-
-#define ERR_IF_COMM_MPI_ERR_DATATYPE(comm, dt, fn)			\
-  {									\
-    ifail = mpi_err_datatype(dt);					\
-    mpi_comm_errors_are_fatal(&comm, &ifail,				\
-			      "%s: invalid datatype (%d)", fn, dt);	\
-    if (ifail != MPI_SUCCESS) goto err;					\
-  }
-
-#define ERR_IF_COMM_MPI_ERR_INFO(comm, info, fn)	 \
-  {							 \
-    ifail = mpi_err_info(info);						\
-    mpi_comm_errors_are_fatal(&comm, &ifail, "%s: invalid info", fn);	\
-    if (ifail != MPI_SUCCESS) goto err;					\
-  }
-
-#define ERR_IF_COMM_MPI_ERR_OP(comm, op, fn)				\
-  {									\
-    ifail = mpi_err_op(op);						\
-    mpi_comm_errors_are_fatal(&comm, &ifail, "%s: invalid op", fn);	\
-    if (ifail != MPI_SUCCESS) goto err;					\
-  }
-
-#define ERR_IF_COMM_MPI_ERR_RANK(comm, rank, fn)			\
-  {									\
-    ifail = mpi_err_rank(rank);						\
-    mpi_comm_errors_are_fatal(&comm, &ifail, "%s: invalid rank", fn);	\
-    if (ifail != MPI_SUCCESS) goto err;					\
-  }
-
-#define ERR_IF_COMM_MPI_ERR_ROOT(comm, root, fn)			\
-  {									\
-    ifail = mpi_err_root(root);						\
-    mpi_comm_errors_are_fatal(&comm, &ifail, "%s: invalid root", fn);	\
-    if (ifail != MPI_SUCCESS) goto err;					\
-  }
-
-#define ERR_IF_COMM_MPI_ERR_TAG(comm, tag, fn)				\
-  {									\
-    ifail = mpi_err_tag(tag);						\
-    mpi_comm_errors_are_fatal(&comm, &ifail, "%s: invalid tag", fn);	\
-    if (ifail != MPI_SUCCESS) goto err;					\
-  }
-
-#define ERR_IF_COMM_MPI_ERR_ARG(comm, arg, fn)				\
-  {									\
-    ifail = mpi_err_arg((arg));					\
-    mpi_comm_errors_are_fatal(&comm, &ifail, "%s: %s", fn, #arg);	\
-    if (ifail != MPI_SUCCESS) goto err;					\
-  }
-
-#define ERR_IF_COMM_MPI_ERR_ERRHANDLER(comm, errhandler, fn)		\
-  {									\
-    ifail = mpi_err_errhandler(errhandler);				\
-    mpi_comm_errors_are_fatal(&comm, &ifail, "%s: invalid errhandler", fn); \
-    if (ifail != MPI_SUCCESS) goto err;					\
-  }
-
-/* MPI_File routine argument error checkers */
-
-#define ERR_IF_FILE_MPI_ERR_COMM(file, comm, fn)			\
-  {									\
-    ifail = mpi_err_comm(comm);						\
-    mpi_file_errors_return(&file, &ifail, "%s: invalid comm", fn);	\
-    if (ifail != MPI_SUCCESS) goto err;					\
-  }
-
-#define ERR_IF_FILE_MPI_ERR_ARG(file, arg, fn)				\
-  {									\
-    ifail = mpi_err_arg((arg));						\
-    mpi_file_errors_return(&file, &ifail, "%s: %s", fn, #arg);		\
-    if (ifail != MPI_SUCCESS) goto err;					\
-  }
-
-#define ERR_IF_FILE_MPI_ERR_AMODE(file, amode, func)			\
-  {									\
-    ifail = mpi_err_amode(amode);					\
-    mpi_file_errors_return(&file, &ifail, "%s: invalid amode", func);	\
-    if (ifail != MPI_SUCCESS) goto err;					\
-  }
-
-#define ERR_IF_FILE_MPI_ERR_INFO(file, info, func) 			\
-  {									\
-    ifail = mpi_err_info(info);						\
-    mpi_file_errors_return(&file, &ifail, "%s: invalid info", func);	\
-    if (ifail != MPI_SUCCESS) goto err;					\
-  }
-
-#define ERR_IF_FILE_MPI_ERR_FILE(file, func)				\
-  {									\
-    ifail = mpi_err_file(file);						\
-    mpi_file_errors_return(&file, &ifail, "%s: invalid file", func);	\
-    if (ifail != MPI_SUCCESS)  goto err;				\
-  }
-
-#define ERR_IF_FILE_MPI_ERR_BUFFER(file, buf, func)			\
-  {									\
-    ifail = mpi_err_buffer(buf);					\
-    mpi_file_errors_return(&file, &ifail, "%s: invalid buffer", func);	\
-    if (ifail != MPI_SUCCESS) goto err;					\
-  }
-
-#define ERR_IF_FILE_MPI_ERR_COUNT(file, count, fn)			\
-  {									\
-    ifail = mpi_err_count(count);					\
-    mpi_file_errors_return(&file, &ifail, "%s: invalid count", fn);	\
-    if (ifail != MPI_SUCCESS) goto err;					\
-  }
-
-#define ERR_IF_FILE_MPI_ERR_DATATYPE(file, datatype, func)		\
-  {									\
-    ifail = mpi_err_datatype(datatype);					\
-    mpi_file_errors_return(&file, &ifail, "%s: invalid datatype", func);\
-    if (ifail != MPI_SUCCESS) goto err;					\
-  }
-
-/*****************************************************************************
- *
- *  MPI_Error_string
- *
- *****************************************************************************/
-
-int MPI_Error_string(int errorcode, char * string, int * resultlen) {
-
-  int ifail = MPI_SUCCESS;
-  const char * msg = NULL;
-
-  /* May be called before MPI_Init() */
-  /* "errcode" is code or class ...  */
-
-  switch (errorcode) {
-  case MPI_SUCCESS:
-    msg = "MPI_SUCCESS: success";
-    break;
-  case MPI_ERR_ACCESS:
-    msg = "MPI_ERR_ACCESS: permission denied";
-    break;
-  case MPI_ERR_AMODE:
-    msg = "MPI_ERR_AMODE: invalid mode argument";
-    break;
-  case MPI_ERR_ARG:
-    msg = "MPI_ERR_AMODE: invalid argument of naother kind";
-    break;
-  case MPI_ERR_BUFFER:
-    msg = "MPI_ERR_BUFFER: invalid buffer pointer argument";
-    break;
-  case MPI_ERR_COMM:
-    msg = "MPI_ERR_COMM: invalid communicator argument";
-    break;
-  case MPI_ERR_COUNT:
-    msg = "MPI_ERR_COUNT: invalid count argument";
-    break;
-  case MPI_ERR_DATATYPE:
-    msg = "MPI_ERR_DATATYPE: invalid datatype";
-    break;
-  case MPI_ERR_INFO:
-    msg = "MPI_ERR_INFO: invalid info argument";
-    break;
-  case MPI_ERR_ERRHANDLER:
-    msg = "MPI_ERR_ERRHANDLER: invalid error handler";
-    break;
-  case MPI_ERR_INTERN:
-    msg = "MPI_ERR_INTERN: internal (implementation) error";
-    break;
-  case MPI_ERR_IO:
-    msg = "MPI_ERR_IO: other i/o error";
-    break;
-  case MPI_ERR_FILE:
-    msg = "MPI_ERR_FILE: invalid file handle";
-    break;
-  case MPI_ERR_NO_SUCH_FILE:
-    msg = "MPI_ERR_NO_SUCH_FILE: file does not exist";
-    break;
-  case MPI_ERR_OP:
-    msg = "MPI_ERR_OP: invalid operation";
-    break;
-  case MPI_ERR_RANK:
-    msg = "MPI_ERR_RANK: invalid rank";
-    break;
-  case MPI_ERR_ROOT:
-    msg = "MPI_ERR_ROOT: invalid root argument";
-    break;
-  case MPI_ERR_TAG:
-    msg = "MPI_ERR_TAG: invalid tag";
-    break;
-  case MPI_ERR_LASTCODE:
-    msg = "MPI_ERR_LASTCODE: last error message code";
-    break;
-  default:
-    /* We say an unrecognised code is and unknown error ... */
-    msg = "MPI_ERR_UNKNOWN: unknown error";
-  }
-
-  if (string) {
-    strncpy(string, msg, MPI_MAX_ERROR_STRING);
-    if (resultlen) *resultlen = strlen(msg);
-  }
-
-  return ifail;
-}
 
 /*****************************************************************************
  *
@@ -391,14 +107,9 @@ int MPI_Error_string(int errorcode, char * string, int * resultlen) {
 
 int MPI_Barrier(MPI_Comm comm) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Barrier";
+  assert(mpi_is_valid_comm(comm));
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -412,20 +123,12 @@ int MPI_Barrier(MPI_Comm comm) {
 int MPI_Bcast(void * buffer, int count, MPI_Datatype datatype, int root,
 	      MPI_Comm comm) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Bcast()";
+  assert(mpi_info->initialised);
+  assert(buffer);
+  assert(count > 0);
+  assert(mpi_is_valid_comm(comm));
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_BUFFER(comm, buffer, fname);
-  ERR_IF_COMM_MPI_ERR_COUNT(comm, count, fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(comm, datatype, fname);
-  ERR_IF_COMM_MPI_ERR_ROOT(comm, root, fname);
-
-  /* no operation required */
-
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -436,17 +139,13 @@ int MPI_Bcast(void * buffer, int count, MPI_Datatype datatype, int root,
 
 int MPI_Init(int * argc, char *** argv) {
 
-  int ifail = MPI_SUCCESS;
-  MPI_Comm self = MPI_COMM_SELF;
-  const char * fname = "MPI_Init()";
+  assert(argc);
+  assert(argv);
 
-  ERR_IF_COMM_MPI_ERR_ARG(self, argc == NULL, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, argv == NULL, fname);
+  mpi_info = (mpi_info_t *) calloc(1, sizeof(mpi_info_t));
+  assert(mpi_info);
 
-  mpi_info_ = (mpi_info_t *) calloc(1, sizeof(mpi_info_t));
-  assert(mpi_info_);
-
-  mpi_info_->initialised = 1;
+  mpi_info->initialised = 1;
 
   /* User data type handles: reserve dt[0].handle = 0 for MPI_DATATYPE_NULL */
   /* Otherwise, user data type handles are indexed 1, 2, 3, ... */
@@ -456,23 +155,21 @@ int MPI_Init(int * argc, char *** argv) {
 
   for (int n = 0; n < MAX_USER_DT; n++) {
     data_t null = {.handle = 0, .bytes = 0, .commit = 0, .flavour = 0};
-    mpi_info_->dt[n] = null;
-    mpi_info_->dtfreelist[n] = n;
+    mpi_info->dt[n] = null;
+    mpi_info->dtfreelist[n] = n;
   }
-  mpi_info_->ndatatype = 0;
-  mpi_info_->ndatatypelast = 0;
+  mpi_info->ndatatype = 0;
+  mpi_info->ndatatypelast = 0;
 
   for (int ih = 0; ih < MAX_USER_FILE; ih++) {
-    mpi_info_->filelist[ih].fp    = NULL;
-    mpi_info_->filelist[ih].disp  = 0;
-    mpi_info_->filelist[ih].etype = MPI_BYTE;
-    mpi_info_->filelist[ih].filetype = MPI_BYTE;
-    strncpy(mpi_info_->filelist[ih].datarep, "native", MPI_MAX_DATAREP_STRING);
-    strncpy(mpi_info_->filelist[ih].errorstr, "", MPI_MAX_ERROR_STRING);
+    mpi_info->filelist[ih].fp    = NULL;
+    mpi_info->filelist[ih].disp  = 0;
+    mpi_info->filelist[ih].etype = MPI_BYTE;
+    mpi_info->filelist[ih].filetype = MPI_BYTE;
+    strncpy(mpi_info->filelist[ih].datarep, "native", MPI_MAX_DATAREP_STRING);
   }
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -483,31 +180,19 @@ int MPI_Init(int * argc, char *** argv) {
 
 int MPI_Init_thread(int * argc, char *** argv, int required, int * provided) {
 
-  int ifail = MPI_SUCCESS;
-  MPI_Comm self = MPI_COMM_SELF;
-  const char * fname = "MPI_Init_thread()";
-
-  ERR_IF_COMM_MPI_ERR_ARG(self, argc == NULL, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, argv == NULL, fname);
-  /* required; see below */
-  ERR_IF_COMM_MPI_ERR_ARG(self, provided == NULL, fname);
+  assert(argc);
+  assert(argv);
+  assert(MPI_THREAD_SINGLE <= required && required <= MPI_THREAD_MULTIPLE);
+  assert(provided);
 
   MPI_Init(argc, argv);
 
-  /* MPI_THREAD_MULTIPLE is not available */
+  /* We are going to say that MPI_THREAD_SERIALIZED is available */
+  /* Not MPI_THREAD_MULTIPLE */
 
-  if (MPI_THREAD_SINGLE <= required && required <= MPI_THREAD_MULTIPLE) {
-    *provided = required;
-    if (required == MPI_THREAD_MULTIPLE) *provided = MPI_THREAD_SERIALIZED;
-  }
-  else {
-    ifail = MPI_ERR_ARG;
-    mpi_comm_errors_are_fatal(&self, &ifail,
-			      "%s: required level unrecognised", fname);
-  }
+  *provided = MPI_THREAD_SERIALIZED;
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -518,15 +203,10 @@ int MPI_Init_thread(int * argc, char *** argv, int required, int * provided) {
 
 int MPI_Initialized(int * flag) {
 
-  int ifail = MPI_SUCCESS;
-  MPI_Comm self = MPI_COMM_SELF;
-  const char * fname = "MPI_Initialised()";
+  assert(flag);
 
-  ERR_IF_COMM_MPI_ERR_ARG(self, flag == NULL, fname);
+  *flag = (mpi_info != NULL); /* A sufficient condition */
 
-  *flag = (mpi_info_ != NULL); /* A sufficient condition */
-
- err:
   return MPI_SUCCESS;
 }
 
@@ -538,16 +218,12 @@ int MPI_Initialized(int * flag) {
 
 int MPI_Finalize(void) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Finalize";
+  assert(mpi_info);
+  assert(mpi_info->ndatatype == 0); /* All released */
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  assert(mpi_info_->ndatatype == 0); /* All released */
+  free(mpi_info);
 
-  free(mpi_info_);
-  mpi_info_ = NULL;
-
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -558,17 +234,12 @@ int MPI_Finalize(void) {
 
 int MPI_Comm_group(MPI_Comm comm, MPI_Group * group) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Comm_group";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, group == NULL, fname);
+  assert(mpi_is_valid_comm(comm));
+  assert(group);
 
   *group = 0;
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -579,17 +250,12 @@ int MPI_Comm_group(MPI_Comm comm, MPI_Group * group) {
 
 int MPI_Comm_rank(MPI_Comm comm, int * rank) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Comm_rank";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, rank == NULL, fname);
+  assert(mpi_is_valid_comm(comm));
+  assert(rank);
 
   *rank = 0;
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -600,17 +266,12 @@ int MPI_Comm_rank(MPI_Comm comm, int * rank) {
 
 int MPI_Comm_size(MPI_Comm comm, int * size) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Comm_size";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, size == NULL, fname);
+  assert(mpi_is_valid_comm(comm));
+  assert(size);
 
   *size = 1;
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -625,21 +286,15 @@ int MPI_Comm_size(MPI_Comm comm, int * size) {
 
 int MPI_Comm_compare(MPI_Comm comm1, MPI_Comm comm2, int * result) {
 
-  int ifail = MPI_SUCCESS;
-  MPI_Comm comm = MPI_COMM_SELF;
-  const char * fname = "MPI_Comm_compare()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, result == NULL, fname)
+  assert(result);
 
   *result = MPI_UNEQUAL;
-  if (!mpi_err_comm(comm1) && !mpi_err_comm(comm2)) {
+  if (mpi_is_valid_comm(comm1) && mpi_is_valid_comm(comm2)) {
     *result = MPI_CONGRUENT;
     if (comm1 == comm2) *result = MPI_IDENT;
   }
 
- err:
-  return ifail;
+  return 0;
 }
 
 /*****************************************************************************
@@ -650,16 +305,12 @@ int MPI_Comm_compare(MPI_Comm comm1, MPI_Comm comm2, int * result) {
 
 int MPI_Abort(MPI_Comm comm, int code) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Abort()";
+  int is_valid;
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
+  is_valid = 1 - mpi_is_valid_comm(comm);
 
- err:
-  exit(code);
-
-  return ifail;
+  exit(code + is_valid);
+  return MPI_SUCCESS; /* ha! */
 }
 
 /*****************************************************************************
@@ -695,22 +346,12 @@ double MPI_Wtick(void) {
 int MPI_Send(void * buf, int count, MPI_Datatype datatype, int dest,
 	     int tag, MPI_Comm comm) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Send";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_BUFFER(comm, buf, fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(comm, datatype, fname);
-  ERR_IF_COMM_MPI_ERR_COUNT(comm, count, fname);
-  ERR_IF_COMM_MPI_ERR_RANK(comm, dest, fname);
-  ERR_IF_COMM_MPI_ERR_TAG(comm, tag, fname);
+  assert(buf);
 
   printf("MPI_Send should not be called in serial.\n");
   exit(0);
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -722,22 +363,12 @@ int MPI_Send(void * buf, int count, MPI_Datatype datatype, int dest,
 int MPI_Recv(void * buf, int count, MPI_Datatype datatype, int source,
 	     int tag, MPI_Comm comm, MPI_Status * status) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Recv()";
+  assert(buf);
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_BUFFER(comm, buf, fname);
-  ERR_IF_COMM_MPI_ERR_COUNT(comm, count, fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(comm, datatype, fname);
-  ERR_IF_COMM_MPI_ERR_RANK(comm, source, fname);
-  ERR_IF_COMM_MPI_ERR_TAG(comm, tag, fname);
+  printf("MPI_Recv should not be called in serial.\n");
+  exit(0);
 
-  if (status != MPI_STATUS_IGNORE) status->MPI_ERROR = MPI_ERR_INTERN;
-  mpi_comm_errors_are_fatal(&comm, &ifail, "%s: cannot call in serial", fname);
-
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -749,22 +380,13 @@ int MPI_Recv(void * buf, int count, MPI_Datatype datatype, int source,
 int MPI_Irecv(void * buf, int count, MPI_Datatype datatype, int source,
 	     int tag, MPI_Comm comm, MPI_Request * request) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Irecv()";
+  assert(buf);
+  assert(request);
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_BUFFER(comm, buf, fname);
-  ERR_IF_COMM_MPI_ERR_COUNT(comm, count, fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(comm, datatype, fname);
-  ERR_IF_COMM_MPI_ERR_RANK(comm, source, fname);
-  ERR_IF_COMM_MPI_ERR_TAG(comm, tag, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, request == NULL, fname);
-
+  /* Could assert tag is ok */
   *request = tag;
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 
@@ -777,22 +399,12 @@ int MPI_Irecv(void * buf, int count, MPI_Datatype datatype, int source,
 int MPI_Ssend(void * buf, int count, MPI_Datatype datatype, int dest,
 	      int tag, MPI_Comm comm) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Ssend()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_BUFFER(comm, buf, fname);
-  ERR_IF_COMM_MPI_ERR_COUNT(comm, count, fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(comm, datatype, fname);
-  ERR_IF_COMM_MPI_ERR_RANK(comm, dest, fname);
-  ERR_IF_COMM_MPI_ERR_TAG(comm, tag, fname);
+  assert(buf);
 
   printf("MPI_Ssend should not be called in serial\n");
   exit(0);
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -804,22 +416,13 @@ int MPI_Ssend(void * buf, int count, MPI_Datatype datatype, int dest,
 int MPI_Isend(void * buf, int count, MPI_Datatype datatype, int dest,
 	      int tag, MPI_Comm comm, MPI_Request * request) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Isend()";
+  assert(buf);
+  assert(request);
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_BUFFER(comm, buf, fname);
-  ERR_IF_COMM_MPI_ERR_COUNT(comm, count, fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(comm, datatype, fname);
-  ERR_IF_COMM_MPI_ERR_RANK(comm, dest, fname);
-  ERR_IF_COMM_MPI_ERR_TAG(comm, tag, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, request == NULL, fname);
-
+  /* Could assert tag is ok */
   *request = tag;
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -831,23 +434,16 @@ int MPI_Isend(void * buf, int count, MPI_Datatype datatype, int dest,
 int MPI_Issend(void * buf, int count, MPI_Datatype datatype, int dest,
 	       int tag, MPI_Comm comm, MPI_Request * request) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Issend()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_BUFFER(comm, buf, fname);
-  ERR_IF_COMM_MPI_ERR_COUNT(comm, count, fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(comm, datatype, fname);
-  ERR_IF_COMM_MPI_ERR_RANK(comm, dest, fname);
-  ERR_IF_COMM_MPI_ERR_TAG(comm, tag, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, request == NULL, fname);
+  assert(buf);
+  assert(count >= 0);
+  assert(dest == 0);
+  assert(mpi_is_valid_comm(comm));
+  assert(request);
 
   printf("MPI_Issend should not be called in serial\n");
   exit(0);
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -858,20 +454,10 @@ int MPI_Issend(void * buf, int count, MPI_Datatype datatype, int dest,
 
 int MPI_Waitall(int count, MPI_Request * requests, MPI_Status * statuses) {
 
-  int ifail = MPI_SUCCESS;
-  MPI_Comm comm = MPI_COMM_SELF;
-  const char * fname = "MPI_Waitall()";
+  assert(count >= 0);
+  assert(requests);
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COUNT(comm, count, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, requests == NULL, fname);
-
-  if (statuses != MPI_STATUSES_IGNORE) {
-    statuses[0].MPI_ERROR = MPI_SUCCESS;
-  }
-
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 
@@ -884,13 +470,9 @@ int MPI_Waitall(int count, MPI_Request * requests, MPI_Status * statuses) {
 int MPI_Waitany(int count, MPI_Request requests[], int * index,
 		MPI_Status * status) {
 
-  int ifail = MPI_SUCCESS;
-  MPI_Comm comm = MPI_COMM_SELF;
-  const char * fname = "MPI_Waitany()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COUNT(comm, count, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, index == NULL, fname);
+  assert(count >= 0);
+  assert(requests);
+  assert(index);
 
   *index = MPI_UNDEFINED;
 
@@ -898,7 +480,7 @@ int MPI_Waitany(int count, MPI_Request requests[], int * index,
     if (requests[ireq] != MPI_REQUEST_NULL) {
       *index = ireq;
       requests[ireq] = MPI_REQUEST_NULL;
-      if (status != MPI_STATUS_IGNORE) {
+      if (status) {
 	status->MPI_SOURCE = 0;
 	status->MPI_TAG = requests[ireq];
       }
@@ -906,9 +488,9 @@ int MPI_Waitany(int count, MPI_Request requests[], int * index,
     }
   }
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
+
 
 /*****************************************************************************
  *
@@ -918,20 +500,13 @@ int MPI_Waitany(int count, MPI_Request requests[], int * index,
 
 int MPI_Probe(int source, int tag, MPI_Comm comm, MPI_Status * status) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Probe()";
+  assert(source == 0);
+  assert(mpi_is_valid_comm(comm));
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_RANK(comm, source, fname);
-  ERR_IF_COMM_MPI_ERR_TAG(comm, tag, fname);
+  printf("MPI_Probe should not be called in serial\n");
+  exit(0);
 
-  ifail = MPI_ERR_INTERN;
-  if (status != MPI_STATUS_IGNORE) status->MPI_ERROR = MPI_ERR_INTERN;
-  mpi_comm_errors_are_fatal(&comm, &ifail, "%s: invalid serial call", fname);
-
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -945,30 +520,15 @@ int MPI_Sendrecv(void * sendbuf, int sendcount, MPI_Datatype sendtype,
 		 MPI_Datatype recvtype, int source, int recvtag,
 		 MPI_Comm comm, MPI_Status * status) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_SendRecv()";
+  assert(sendbuf);
+  assert(dest == source);
+  assert(recvbuf);
+  assert(recvcount == sendcount);
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_BUFFER(comm, sendbuf, fname);
-  ERR_IF_COMM_MPI_ERR_COUNT(comm, sendcount, fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(comm, sendtype, fname);
-  ERR_IF_COMM_MPI_ERR_RANK(comm, dest, fname);
-  ERR_IF_COMM_MPI_ERR_TAG(comm, sendtag, fname);
+  printf("MPI_Sendrecv should not be called in serial\n");
+  exit(0);
 
-  ERR_IF_COMM_MPI_ERR_BUFFER(comm, recvbuf, fname);
-  ERR_IF_COMM_MPI_ERR_COUNT(comm, recvcount, fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(comm, recvtype, fname);
-  ERR_IF_COMM_MPI_ERR_RANK(comm, source, fname);
-  ERR_IF_COMM_MPI_ERR_TAG(comm, recvtag, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, recvcount != sendcount, fname);
-
-  ifail = MPI_ERR_INTERN;
-  if (status != MPI_STATUS_IGNORE) status->MPI_ERROR = MPI_ERR_INTERN;
-  mpi_comm_errors_are_fatal(&comm, &ifail, "%s: invalid serial call", fname);
-
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -980,23 +540,17 @@ int MPI_Sendrecv(void * sendbuf, int sendcount, MPI_Datatype sendtype,
 int MPI_Reduce(void * sendbuf, void * recvbuf, int count, MPI_Datatype type,
 	       MPI_Op op, int root, MPI_Comm comm) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Reduce()";
+  assert(sendbuf);
+  assert(recvbuf);
+  assert(count >= 0);
+  assert(root == 0);
+  assert(mpi_is_valid_comm(comm));
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_BUFFER(comm, sendbuf, fname);
-  ERR_IF_COMM_MPI_ERR_BUFFER(comm, recvbuf, fname);
-  ERR_IF_COMM_MPI_ERR_COUNT(comm, count, fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(comm, type, fname);
-  ERR_IF_COMM_MPI_ERR_OP(comm, op, fname);
-  ERR_IF_COMM_MPI_ERR_ROOT(comm, root, fname);
+  assert(op != MPI_OP_NULL);
 
-  /* Whatever the operation is, the result is the same ... ! */
   mpi_copy(sendbuf, recvbuf, count, type);
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /****************************************************************************
@@ -1009,25 +563,16 @@ int MPI_Allgather(void * sendbuf, int sendcount, MPI_Datatype sendtype,
 		  void * recvbuf, int recvcount, MPI_Datatype recvtype,
 		  MPI_Comm comm) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Allgather()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_BUFFER(comm, sendbuf, fname);
-  ERR_IF_COMM_MPI_ERR_COUNT(comm, sendcount, fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(comm, sendtype, fname);
-  ERR_IF_COMM_MPI_ERR_BUFFER(comm, recvbuf, fname);
-  ERR_IF_COMM_MPI_ERR_COUNT(comm, recvcount, fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(comm, recvtype, fname);
-
-  ERR_IF_COMM_MPI_ERR_ARG(comm, sendcount != recvcount, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, sendtype != recvtype, fname);
+  assert(mpi_info);
+  assert(sendbuf);
+  assert(recvbuf);
+  assert(sendcount == recvcount);
+  assert(sendtype == recvtype);
+  assert(mpi_is_valid_comm(comm));
 
   mpi_copy(sendbuf, recvbuf, sendcount, sendtype);
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1040,26 +585,16 @@ int MPI_Gather(void * sendbuf, int sendcount, MPI_Datatype sendtype,
 	       void * recvbuf, int recvcount, MPI_Datatype recvtype,
 	       int root, MPI_Comm comm) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Gather()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_BUFFER(comm, sendbuf, fname);
-  ERR_IF_COMM_MPI_ERR_COUNT(comm, sendcount, fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(comm, sendtype, fname);
-  ERR_IF_COMM_MPI_ERR_BUFFER(comm, recvbuf, fname);
-  ERR_IF_COMM_MPI_ERR_COUNT(comm, recvcount, fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(comm, recvtype, fname);
-  ERR_IF_COMM_MPI_ERR_ROOT(comm, root, fname);
-
-  ERR_IF_COMM_MPI_ERR_ARG(comm, sendcount != recvcount, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, sendtype != recvtype, fname);
-
+  assert(mpi_info);
+  assert(sendbuf);
+  assert(recvbuf);
+  assert(sendcount == recvcount);
+  assert(sendtype == recvtype);
+  assert(mpi_is_valid_comm(comm));
+  
   mpi_copy(sendbuf, recvbuf, sendcount, sendtype);
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1074,26 +609,15 @@ int MPI_Gatherv(const void * sendbuf, int sendcount, MPI_Datatype sendtype,
 		void * recvbuf, const int * recvcounts, const int * displ,
 		MPI_Datatype recvtype, int root, MPI_Comm comm) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Gatherv()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_BUFFER(comm, (void *) sendbuf, fname);
-  ERR_IF_COMM_MPI_ERR_COUNT(comm, sendcount, fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(comm, sendtype, fname);
-  ERR_IF_COMM_MPI_ERR_BUFFER(comm, recvbuf, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, displ == NULL, fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(comm, recvtype, fname);
-  ERR_IF_COMM_MPI_ERR_ROOT(comm, root, fname);
-
-  ERR_IF_COMM_MPI_ERR_ARG(comm, sendtype != recvtype, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, sendcount != recvcounts[0], fname);
+  assert(sendbuf);
+  assert(recvbuf);
+  assert(root == 0);
+  assert(sendtype == recvtype);
+  assert(sendcount == recvcounts[0]);
 
   mpi_copy((void *) sendbuf, recvbuf, sendcount, sendtype);
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1105,23 +629,16 @@ int MPI_Gatherv(const void * sendbuf, int sendcount, MPI_Datatype sendtype,
 int MPI_Allreduce(void * sendbuf, void * recvbuf, int count, MPI_Datatype type,
 		  MPI_Op op, MPI_Comm comm) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Allreduce()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_BUFFER(comm, sendbuf, fname);
-  ERR_IF_COMM_MPI_ERR_BUFFER(comm, recvbuf, fname);
-  ERR_IF_COMM_MPI_ERR_COUNT(comm, count, fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(comm, type, fname);
-  ERR_IF_COMM_MPI_ERR_OP(comm, op, fname);
+  assert(sendbuf);
+  assert(recvbuf);
+  assert(count >= 1);
+  assert(mpi_is_valid_comm(comm));
 
   if (sendbuf != MPI_IN_PLACE) {
     mpi_copy(sendbuf, recvbuf, count, type);
   }
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1130,29 +647,18 @@ int MPI_Allreduce(void * sendbuf, void * recvbuf, int count, MPI_Datatype type,
  *
  *  Return the original communicator as the new communicator.
  *
- *  The colur argument can be MPI_UNDEFINED, which may be negative.
- *  With MPI_UNDEFINED -999, this will cause an error at the moment.
- *
  *****************************************************************************/
 
 int MPI_Comm_split(MPI_Comm comm, int colour, int key, MPI_Comm * newcomm) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Comm_split()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, colour < 0, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, newcomm == NULL, fname);
+  assert(mpi_is_valid_comm(comm));
+  assert(newcomm);
 
   /* Allow that a split Cartesian communicator is different */
   /* See MPI_Comm_compare() */
-
-  mpi_info_->key = key;
   *newcomm = MPI_COMM_WORLD;
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1164,21 +670,13 @@ int MPI_Comm_split(MPI_Comm comm, int colour, int key, MPI_Comm * newcomm) {
 int MPI_Comm_split_type(MPI_Comm comm, int split_type, int key, MPI_Info info,
 			MPI_Comm * newcomm) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Comm_split_type()";
+  assert(mpi_is_valid_comm(comm));
+  assert(newcomm);
+  assert(split_type == MPI_COMM_TYPE_SHARED);
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, split_type != MPI_COMM_TYPE_SHARED, fname);
-  /* key controls rank assignment; no constraints */
-  ERR_IF_COMM_MPI_ERR_INFO(comm, info, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, newcomm == NULL, fname);
-
-  mpi_info_->key = key;
   *newcomm = comm;
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1189,22 +687,13 @@ int MPI_Comm_split_type(MPI_Comm comm, int split_type, int key, MPI_Info info,
 
 int MPI_Comm_free(MPI_Comm * comm) {
 
-  int ifail = MPI_SUCCESS;
-  MPI_Comm self = MPI_COMM_SELF;
-  const char * fname = "MPI_Comm_free()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, comm == NULL, fname);
-  ERR_IF_COMM_MPI_ERR_COMM(*comm, fname);
-
   /* Mark Cartesian communicators as free */
 
   if (*comm > MPI_COMM_SELF) {
-    mpi_info_->ncart -= 1;
+    mpi_info->ncart -= 1;
   }
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1217,17 +706,13 @@ int MPI_Comm_free(MPI_Comm * comm) {
 
 int MPI_Comm_dup(MPI_Comm oldcomm, MPI_Comm * newcomm) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Comm_dup()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(oldcomm, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(oldcomm, newcomm == NULL, fname);
+  assert(mpi_info);
+  assert(mpi_is_valid_comm(oldcomm));
+  assert(newcomm);
 
   *newcomm = oldcomm;
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1240,16 +725,10 @@ int MPI_Type_indexed(int count, int * array_of_blocklengths,
 		     int * array_of_displacements, MPI_Datatype oldtype,
 		     MPI_Datatype * newtype) {
 
-  int ifail = MPI_SUCCESS;
-  MPI_Comm self = MPI_COMM_SELF;
-  const char * fname = "MPI_Type_indexed()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COUNT(self, count, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, array_of_blocklengths == NULL, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, array_of_displacements == NULL, fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(self, oldtype, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, newtype == NULL, fname);
+  assert(count > 0);
+  assert(array_of_blocklengths);
+  assert(array_of_displacements);
+  assert(newtype);
 
   {
     data_t dt = {0};
@@ -1259,11 +738,10 @@ int MPI_Type_indexed(int count, int * array_of_blocklengths,
     dt.commit  = 0;
     dt.flavour = DT_NOT_IMPLEMENTED; /* Can't do displacements at moment */
 
-    mpi_data_type_add(mpi_info_, &dt, newtype);
+    mpi_data_type_add(mpi_info, &dt, newtype);
   }
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1274,14 +752,8 @@ int MPI_Type_indexed(int count, int * array_of_blocklengths,
 
 int MPI_Type_contiguous(int count, MPI_Datatype old, MPI_Datatype * newtype) {
 
-  int ifail = MPI_SUCCESS;
-  MPI_Comm self = MPI_COMM_SELF;
-  const char * fname = "MPI_Type_contiguous()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COUNT(self, count, fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(self, old, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, newtype == NULL, fname);
+  assert(count > 0);
+  assert(newtype);
 
   {
     data_t dt = {0};
@@ -1291,11 +763,10 @@ int MPI_Type_contiguous(int count, MPI_Datatype old, MPI_Datatype * newtype) {
     dt.commit  = 0;
     dt.flavour = DT_CONTIGUOUS;
 
-    mpi_data_type_add(mpi_info_, &dt, newtype);
+    mpi_data_type_add(mpi_info, &dt, newtype);
   }
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1306,33 +777,24 @@ int MPI_Type_contiguous(int count, MPI_Datatype old, MPI_Datatype * newtype) {
 
 int MPI_Type_commit(MPI_Datatype * type) {
 
-  int ifail = MPI_SUCCESS;
-  MPI_Comm self = MPI_COMM_SELF;
-  const char * fname = "MPI_Type_commit()";
+  assert(type);
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, type == NULL, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, *type == MPI_DATATYPE_NULL, fname);
+  int handle = *type;
 
-  {
-    int handle = *type;
-
-    if (handle < 0) {
-      ifail = MPI_ERR_ARG;
-      mpi_comm_errors_are_fatal(&self, &ifail, "%s: intrinsic type!", fname);
-    }
-
-    if (handle > mpi_info_->ndatatypelast) {
-      ifail = MPI_ERR_DATATYPE;
-      mpi_comm_errors_are_fatal(&self, &ifail, "unrecognised datatype", fname);
-    }
-
-    assert(mpi_info_->dt[handle].handle == handle);
-    mpi_info_->dt[handle].commit = 1;
+  if (handle < 0) {
+    printf("MPI_Type_commit: Attempt to commit intrinsic type\n");
+  }
+  if (handle == 0) {
+    printf("MPI_Type_commit: Attempt to commit null data type\n");
+  }
+  if (handle > mpi_info->ndatatypelast) {
+    printf("MPI_Type_commit: unrecognised handle %d\n", handle);
   }
 
- err:
-  return ifail;
+  assert(mpi_info->dt[handle].handle == handle);
+  mpi_info->dt[handle].commit = 1;
+
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1343,18 +805,12 @@ int MPI_Type_commit(MPI_Datatype * type) {
 
 int MPI_Type_free(MPI_Datatype * type) {
 
-  int ifail = MPI_SUCCESS;
-  MPI_Comm self = MPI_COMM_SELF;
-  const char * fname = "MPI_Type_free()";
+  assert(type);
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, type == NULL, fname);
-
-  mpi_data_type_free(mpi_info_, type);
+  mpi_data_type_free(mpi_info, type);
   assert(*type == MPI_DATATYPE_NULL);
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1366,30 +822,22 @@ int MPI_Type_free(MPI_Datatype * type) {
 int MPI_Type_vector(int count, int blocklength, int stride,
 		    MPI_Datatype oldtype, MPI_Datatype * newtype) {
 
-  int ifail = MPI_SUCCESS;
-  MPI_Comm self = MPI_COMM_SELF;
-  const char * fname = "MPI_Type_vector()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COUNT(self, count, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, blocklength < 0, fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(self, oldtype, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, newtype == NULL, fname);
+  assert(count > 0);
+  assert(blocklength >= 0);
+  assert(newtype);
 
   {
     data_t dt = {0};
 
-    dt.handle  = MPI_DATATYPE_NULL;
-    dt.bytes   = count*blocklength*mpi_sizeof(oldtype);
-    dt.commit  = 0;
+    dt.handle = MPI_DATATYPE_NULL;
+    dt.bytes  = 0;
+    dt.commit = 0;
     dt.flavour = DT_NOT_IMPLEMENTED; /* Can't do strided copy */
-    dt.stride  = stride;
 
-    mpi_data_type_add(mpi_info_, &dt, newtype);
+    mpi_data_type_add(mpi_info, &dt, newtype);
   }
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1401,43 +849,26 @@ int MPI_Type_vector(int count, int blocklength, int stride,
 int MPI_Cart_create(MPI_Comm oldcomm, int ndims, int * dims, int * periods,
 		    int reorder, MPI_Comm * newcomm) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Cart_create";
+  int n;
+  int icart;
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(oldcomm, fname);
-  /* standard doesn't put any constraint on ndims */
-  ERR_IF_COMM_MPI_ERR_ARG(oldcomm, dims == NULL, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(oldcomm, periods == NULL, fname);
-  /* reorder is logical; no constraints */
-  ERR_IF_COMM_MPI_ERR_ARG(oldcomm, newcomm == NULL, fname);
+  assert(mpi_info);
+  assert(ndims <= 3);
+  assert(newcomm);
 
-  mpi_info_->ncart += 1;
+  mpi_info->ncart += 1;
+  icart = MPI_COMM_SELF + mpi_info->ncart;
+  assert(icart < MAX_CART_COMM);
 
-  {
-    /* Only Cartesian comms have handles above MPI_COM_SELF */
-    /* See also MPI_Comm_free() */
-    int icart = MPI_COMM_SELF + mpi_info_->ncart;
+  *newcomm = icart;
 
-    if (icart >= MAX_CART_COMM) {
-      ifail = MPI_ERR_INTERN;
-      mpi_comm_errors_are_fatal(&oldcomm, &ifail,
-				"MPI_Cart_create(): out of handles");
-      goto err;
-    }
+  /* Record periodity */
 
-    /* Record periodity, reorder */
-
-    for (int n = 0; n < ndims; n++) {
-      mpi_info_->period[icart][n] = periods[n];
-    }
-    mpi_info_->reorder[icart] = reorder;
-
-    *newcomm = icart;
+  for (n = 0; n < ndims; n++) {
+    mpi_info->period[icart][n] = periods[n];
   }
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1451,23 +882,21 @@ int MPI_Cart_create(MPI_Comm oldcomm, int ndims, int * dims, int * periods,
 int MPI_Cart_get(MPI_Comm comm, int maxdims, int * dims, int * periods,
 		 int * coords) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Cart_get()";
+  int n;
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, dims == NULL, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, periods == NULL, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, coords == NULL, fname);
+  assert(mpi_info);
+  assert(mpi_is_valid_comm(comm));
+  assert(dims);
+  assert(periods);
+  assert(coords);
 
-  for (int n = 0; n < maxdims; n++) {
+  for (n = 0; n < maxdims; n++) {
     dims[n] = 1;
-    periods[n] = mpi_info_->period[comm][n];
+    periods[n] = mpi_info->period[comm][n];
     coords[n] = 0;
   }
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1478,20 +907,18 @@ int MPI_Cart_get(MPI_Comm comm, int maxdims, int * dims, int * periods,
 
 int MPI_Cart_coords(MPI_Comm comm, int rank, int maxdims, int * coords) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Cart_coords()";
+  int d;
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_RANK(comm, rank, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, coords == NULL, fname);
+  assert(mpi_info);
+  assert(comm != MPI_COMM_NULL);
+  assert(rank == 0);
+  assert(coords);
 
-  for (int d = 0; d < maxdims; d++) {
+  for (d = 0; d < maxdims; d++) {
     coords[d] = 0;
   }
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1504,18 +931,14 @@ int MPI_Cart_coords(MPI_Comm comm, int rank, int maxdims, int * coords) {
 
 int MPI_Cart_rank(MPI_Comm comm, int * coords, int * rank) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Cart_rank()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, coords == NULL, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, rank == NULL, fname);
+  assert(mpi_info);
+  assert(mpi_is_valid_comm(comm));
+  assert(coords);
+  assert(rank);
 
   *rank = 0;
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1527,25 +950,21 @@ int MPI_Cart_rank(MPI_Comm comm, int * coords, int * rank) {
 int MPI_Cart_shift(MPI_Comm comm, int direction, int disp, int * rank_source,
 		   int * rank_dest) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Cart_shift()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, rank_source == NULL, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, rank_dest   == NULL, fname);
+  assert(mpi_info);
+  assert(comm != MPI_COMM_NULL);
+  assert(rank_source);
+  assert(rank_dest);
 
   *rank_source = 0;
   *rank_dest = 0;
 
   /* Non periodic directions */
-  if (disp != 0 && mpi_info_->period[comm][direction] != 1) {
+  if (disp != 0 && mpi_info->period[comm][direction] != 1) {
     *rank_source = MPI_PROC_NULL;
     *rank_dest   = MPI_PROC_NULL;
   }
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1556,18 +975,14 @@ int MPI_Cart_shift(MPI_Comm comm, int direction, int disp, int * rank_source,
 
 int MPI_Cart_sub(MPI_Comm comm, int * remain_dims, MPI_Comm * new_comm) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Cart_sub()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, remain_dims == NULL, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(comm, new_comm == NULL, fname);
+  assert(mpi_info);
+  assert(mpi_is_valid_comm(comm));
+  assert(remain_dims);
+  assert(new_comm);
 
   *new_comm = comm;
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1578,20 +993,18 @@ int MPI_Cart_sub(MPI_Comm comm, int * remain_dims, MPI_Comm * new_comm) {
 
 int MPI_Dims_create(int nnodes, int ndims, int * dims) {
 
-  int ifail = MPI_SUCCESS;
-  MPI_Comm self = MPI_COMM_SELF;
-  const char * fname = "MPI_Dims_create()";
+  int d;
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, nnodes != 1, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, dims == NULL, fname);
+  assert(mpi_info);
+  assert(nnodes == 1);
+  assert(ndims > 0);
+  assert(dims);
 
-  for (int d = 0; d < ndims; d++) {
+  for (d = 0; d < ndims; d++) {
     dims[d] = 1;
   }
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1602,21 +1015,13 @@ int MPI_Dims_create(int nnodes, int ndims, int * dims) {
 
 int MPI_Op_create(MPI_User_function * function, int commute, MPI_Op * op) {
 
-  int ifail = MPI_SUCCESS;
-  MPI_Comm self = MPI_COMM_SELF;
-  const char * fname = "MPI_Op_create()";
+  /* Never actually use function, so don't really care what's here... */
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, function == NULL, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, op == NULL, fname);
+  assert(function);
 
-  /* commute is logical */
-
-  mpi_info_->commute = commute;
   *op = MPI_SUM;
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1627,24 +1032,12 @@ int MPI_Op_create(MPI_User_function * function, int commute, MPI_Op * op) {
 
 int MPI_Op_free(MPI_Op * op) {
 
-  int ifail = MPI_SUCCESS;
-  MPI_Comm self = MPI_COMM_SELF;
-  const char * fname = "MPI_Op_free()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, op == NULL, fname);
+  assert(op);
 
   *op = MPI_OP_NULL;
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
-
-/*****************************************************************************
- *
- *  Internal
- *
- *****************************************************************************/
 
 /*****************************************************************************
  *
@@ -1653,7 +1046,7 @@ int MPI_Op_free(MPI_Op * op) {
  *****************************************************************************/
 
 static void mpi_copy(void * send, void * recv, int count, MPI_Datatype type) {
-
+ 
   size_t sizeof_datatype = mpi_sizeof(type);
 
   assert(send);
@@ -1674,8 +1067,6 @@ static void mpi_copy(void * send, void * recv, int count, MPI_Datatype type) {
 static int mpi_sizeof(MPI_Datatype type) {
 
   int size = -1;
-
-  assert(mpi_datatype_intrinsic(type) || mpi_datatype_user(type));
 
   switch (type) {
   case MPI_CHAR:
@@ -1722,13 +1113,13 @@ static int mpi_sizeof(MPI_Datatype type) {
     size = sizeof(int64_t);
     break;
   case MPI_PACKED:
-    /* Not implementend */
-    break;
+    printf("MPI_PACKED not implemented\n");
   default:
-    /* ... user type */
+    /* Try user type */
     size = mpi_sizeof_user(type);
   }
 
+  assert(size != -1);
   return size;
 }
 
@@ -1743,7 +1134,7 @@ static int mpi_sizeof(MPI_Datatype type) {
 static int mpi_sizeof_user(MPI_Datatype handle) {
 
   int sz    = -1;
-  int index = mpi_data_type_handle(mpi_info_, handle);
+  int index = mpi_data_type_handle(mpi_info, handle);
 
   assert(index >= MPI_COMM_NULL); /* not intrinsic */
 
@@ -1752,7 +1143,7 @@ static int mpi_sizeof_user(MPI_Datatype handle) {
     MPI_Abort(MPI_COMM_WORLD, 0);
   }
   else {
-    sz = mpi_info_->dt[index].bytes;
+    sz = mpi_info->dt[index].bytes;
   }
 
   return sz;
@@ -1766,22 +1157,16 @@ static int mpi_sizeof_user(MPI_Datatype handle) {
 
 int MPI_Comm_set_errhandler(MPI_Comm comm, MPI_Errhandler errhandler) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Comm_set_errhandler()";
+  assert(mpi_info);
+  assert(mpi_is_valid_comm(comm));
+  assert(errhandler == MPI_ERRORS_ARE_FATAL);
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(comm, fname);
-  ERR_IF_COMM_MPI_ERR_ERRHANDLER(comm, errhandler, fname);
-
-  /* Only errhandler == MPI_ERRORS_ARE_FATAL available in comm */
-
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 #ifdef _DO_NOT_INCLUDE_MPI2_INTERFACE
 /*
- * The following are removed from MPI3... and have an appropriate
+ * The following are removed from MPI3... and have an apprpriate
  * MPI2 replacement.
  *
  * MPI_Address           ->    MPI_Get_address
@@ -1815,24 +1200,18 @@ int MPI_Comm_set_errhandler(MPI_Comm comm, MPI_Errhandler errhandler) {
  *
  *  MPI_Get_address
  *
- *  Supersedes MPI_Address
+ *  Supercedes MPI_Address
  *
  *****************************************************************************/
 
 int MPI_Get_address(const void * location, MPI_Aint * address) {
 
-  int ifail = MPI_SUCCESS;
-  MPI_Comm self = MPI_COMM_SELF;
-  const char * fname = "MPI_Get_address()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, location == NULL, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, address  == NULL, fname);
+  assert(location);
+  assert(address);
 
   *address = (MPI_Aint) location;
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1843,20 +1222,12 @@ int MPI_Get_address(const void * location, MPI_Aint * address) {
 
 int MPI_Group_translate_ranks(MPI_Group grp1, int n, const int * ranks1,
 			      MPI_Group grp2, int * ranks2) {
-
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_Group_translate_ranks()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COMM(grp1, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(grp1, ranks1 == NULL, fname);
-  ERR_IF_COMM_MPI_ERR_COMM(grp2, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(grp2, ranks2 == NULL, fname);
+  assert(ranks1);
+  assert(ranks2);
 
   memcpy(ranks2, ranks1, n*sizeof(int));
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1868,13 +1239,7 @@ int MPI_Group_translate_ranks(MPI_Group grp1, int n, const int * ranks1,
 int MPI_Type_create_resized(MPI_Datatype oldtype, MPI_Aint lb, MPI_Aint extent,
 			    MPI_Datatype * newtype) {
 
-  int ifail = MPI_SUCCESS;
-  MPI_Comm self = MPI_COMM_SELF;
-  const char * fname = "MPI_Type_create_resized()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(self, oldtype, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, newtype == NULL, fname);
+  assert(newtype);
 
   {
     data_t dt = {0};
@@ -1883,20 +1248,18 @@ int MPI_Type_create_resized(MPI_Datatype oldtype, MPI_Aint lb, MPI_Aint extent,
     dt.bytes   = extent;
     dt.commit  = 0;
     dt.flavour = DT_NOT_IMPLEMENTED; /* Should be  old.flavour */
-    dt.lb      = lb;
 
-    mpi_data_type_add(mpi_info_, &dt, newtype);
+    mpi_data_type_add(mpi_info, &dt, newtype);
   }
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
  *
  *  MPI_Type_create_struct
  *
- *  Supersedes MPI_Type_struct()
+ *  Supercedes MPI_Type_struct()
  *
  *****************************************************************************/
 
@@ -1904,16 +1267,13 @@ int MPI_Type_create_struct(int count, int array_of_blocklengths[],
 			   const MPI_Aint array_of_displacements[],
 			   const MPI_Datatype array_of_types[],
 			   MPI_Datatype * newtype) {
-  int ifail = MPI_SUCCESS;
-  MPI_Comm self = MPI_COMM_SELF;
-  const char * fname = "MPI_Type_create_struct()";
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_COUNT(self, count, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, array_of_blocklengths == NULL, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, array_of_displacements == NULL, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, array_of_types == NULL, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, newtype == NULL, fname);
+  assert(count > 0);
+  assert(array_of_blocklengths);
+  assert(array_of_displacements);
+  assert(array_of_types);
+  assert(newtype);
+
 
   {
     data_t dt = {0};
@@ -1928,11 +1288,10 @@ int MPI_Type_create_struct(int count, int array_of_blocklengths[],
     dt.bytes = (array_of_displacements[count-1] - array_of_displacements[0])
       + mpi_sizeof(array_of_types[count-1]);
 
-    mpi_data_type_add(mpi_info_, &dt, newtype);
+    mpi_data_type_add(mpi_info, &dt, newtype);
   }
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1944,23 +1303,27 @@ int MPI_Type_create_struct(int count, int array_of_blocklengths[],
 int MPI_Type_get_extent(MPI_Datatype datatype, MPI_Aint * lb,
 			MPI_Aint * extent) {
 
-  int ifail = MPI_SUCCESS;
-  MPI_Comm self = MPI_COMM_SELF;
-  const char * fname = "MPI_Type_get_extent()";
+  int handle = MPI_DATATYPE_NULL;
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(self, datatype, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, lb == NULL, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, extent == NULL, fname);
+  assert(lb);
+  assert(extent);
 
-  /* Special case MPI_PACKED not implemented ... */
-  ERR_IF_COMM_MPI_ERR_ARG(self, datatype == MPI_PACKED, fname);
+  if (datatype < 0) {
+    /* intrinsic allowed? Why? */
+    assert(0);
+    *extent = mpi_sizeof(datatype);
+  }
 
-  *lb = 0;
-  *extent = mpi_sizeof(datatype);
+  handle = mpi_data_type_handle(mpi_info, datatype);
 
- err:
-  return ifail;
+  if (handle == MPI_DATATYPE_NULL) {
+    printf("MPI_Type_get_Extent: null handle\n");
+  }
+
+  *lb = 0; /* Always, at the moment */
+  *extent = mpi_info->dt[handle].bytes;
+
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -1971,21 +1334,11 @@ int MPI_Type_get_extent(MPI_Datatype datatype, MPI_Aint * lb,
 
 int MPI_Type_size(MPI_Datatype datatype, int * sz) {
 
-  int ifail = MPI_SUCCESS;
-  MPI_Comm self = MPI_COMM_SELF;
-  const char * fname = "MPI_Type_size()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(self, datatype, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, sz == NULL, fname);
-
-  /* Special case MPI_PACKED not implemented ... */
-  ERR_IF_COMM_MPI_ERR_ARG(self, datatype == MPI_PACKED, fname);
+  assert(sz);
 
   *sz = mpi_sizeof(datatype);
 
- err:
-  return ifail;
+  return 0;
 }
 
 /*****************************************************************************
@@ -1997,21 +1350,12 @@ int MPI_Type_size(MPI_Datatype datatype, int * sz) {
 int MPI_File_open(MPI_Comm comm, const char * filename, int amode,
 		  MPI_Info info, MPI_File * fh) {
 
-  int ifail = MPI_SUCCESS;
-  MPI_File file = MPI_FILE_NULL;
-  const char * fname = "MPI_File_open()";
-
   FILE * fp = NULL;
   const char * fdmode = NULL;
 
-  /* Default file error handler responsible ... */
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_FILE_MPI_ERR_COMM(file, comm, fname);
-  ERR_IF_FILE_MPI_ERR_ARG(file, filename == NULL, fname);
-  ERR_IF_FILE_MPI_ERR_AMODE(file, amode, fname);
-  ERR_IF_FILE_MPI_ERR_INFO(file, info, fname);
-  ERR_IF_FILE_MPI_ERR_ARG(file, fh == NULL, fname);
+  assert(mpi_is_valid_comm(comm));
+  assert(filename);
+  assert(fh);
 
   /* Exactly one of RDONLY, WRONLY, or RDWR must be present. */
   /* RDONLY => no CREATE or EXCL. */
@@ -2054,39 +1398,14 @@ int MPI_File_open(MPI_Comm comm, const char * filename, int amode,
   fp = fopen(filename, fdmode);
 
   if (fp == NULL) {
-    /* Fail in fopen() => errno is set (many possible values ...) */
-    if (errno ==  ENOENT) {
-      ifail = MPI_ERR_NO_SUCH_FILE;
-      mpi_file_errors_return(&file, &ifail,
-			     "MPI_File_open(): no such file %s",
-			     filename);
-    }
-    else {
-      ifail = MPI_ERR_IO;
-      mpi_file_errors_return(&file, &ifail,
-			     "MPI_File_open(): failed file %s mode %s",
-			     filename, fdmode);
-    }
-    goto err;
+    printf("MPI_File_open: attempt to open %s mode %s failed\n", filename,
+	   fdmode);
+    return MPI_ERR_NO_SUCH_FILE;
   }
 
-  {
-    /* Generate a new file handle */
-    file = mpi_file_handle_retain(mpi_info_, fp);
-    if (file == MPI_FILE_NULL) {
-      /* Internal error; run out of file handles */
-      ifail = MPI_ERR_INTERN;
-      mpi_file_errors_return(&file, &ifail,
-			     "MPI_File_open(): run out of handles");
-      fclose(fp);
-      goto err;
-    }
-    mpi_info_->filelist[file].comm = MPI_COMM_SELF;
-    *fh = file;
-  }
+  *fh = mpi_file_handle_retain(mpi_info, fp);
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -2097,24 +1416,22 @@ int MPI_File_open(MPI_Comm comm, const char * filename, int amode,
 
 int MPI_File_close(MPI_File * fh) {
 
-  int ifail = MPI_SUCCESS;
-  MPI_File file = MPI_FILE_NULL;
-  const char * fname = "MPI_File_close()";
+  FILE * fp = NULL;
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_FILE_MPI_ERR_ARG(file, fh == NULL, fname);
-  ERR_IF_FILE_MPI_ERR_FILE(*fh, fname);
+  assert(fh);
 
-  /* File handle is now validated ... */
-  {
-    FILE * fp = mpi_file_handle_release(mpi_info_, *fh);
+  fp = mpi_file_handle_release(mpi_info, *fh);
+
+  if (fp == NULL) {
+    printf("MPI_File_close: invalid file handle\n");
+    return MPI_ERR_FILE;
+  }
+  else {
     fclose(fp);
+    *fh = MPI_FILE_NULL;
   }
 
-  *fh = MPI_FILE_NULL;
-
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -2125,34 +1442,11 @@ int MPI_File_close(MPI_File * fh) {
 
 int MPI_File_delete(const char * filename, MPI_Info info) {
 
-  int ifail = MPI_SUCCESS;
-  MPI_File file = MPI_FILE_NULL;
-  const char * fname = "MPI_File_delete()";
+  assert(filename);
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_FILE_MPI_ERR_ARG(file, filename == NULL, fname);
-  ERR_IF_FILE_MPI_ERR_INFO(file, info, fname);
+  remove(filename);
 
-  /* remove() returns 0 on success, -1 otherwise. errno is set. */
-
-  if (remove(filename) != 0) {
-
-    /* The standard gives the following options ...
-     * MPI_ERR_NO_SUCH_FILE if the file does not exist; or
-     * MPI_ERR_FILE_IN_USE or MPI_ERR_ACCESS. We use the latter. */
-
-    if (errno == ENOENT) {
-      ifail = MPI_ERR_NO_SUCH_FILE;
-      mpi_file_errors_return(&file, &ifail, "MPI_Delete(): no such file");
-    }
-    else {
-      ifail = MPI_ERR_ACCESS;
-      mpi_file_errors_return(&file, &ifail, "MPI_Delete(): access error");
-    }
-  }
-
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -2168,41 +1462,30 @@ int MPI_Type_create_subarray(int ndims, const int * array_of_sizes,
 			     MPI_Datatype oldtype,
 			     MPI_Datatype * newtype) {
 
-  int ifail = MPI_SUCCESS;
-  MPI_Comm self = MPI_COMM_SELF;
-  const char * fname = "MPI_Type_create_subarray";
+  int nelements = 0;
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, ndims <= 0, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, array_of_subsizes == NULL, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, array_of_starts == NULL, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, order != MPI_ORDER_C, fname);
-  ERR_IF_COMM_MPI_ERR_DATATYPE(self, oldtype, fname);
-  ERR_IF_COMM_MPI_ERR_ARG(self, newtype == NULL, fname);
-
-  /* Should really be ... */
+  assert(ndims == 2 || ndims == 3); /* We accept this is not general */
+  assert(array_of_sizes);
+  assert(array_of_subsizes);
+  assert(array_of_starts);
   assert(order == MPI_ORDER_C || order == MPI_ORDER_FORTRAN);
+  assert(newtype);
 
   /* Assume this is a contiguous block of elements of oldtype */
+  nelements = array_of_sizes[0]*array_of_sizes[1];
+  if (ndims == 3) nelements *= array_of_sizes[2];
 
   {
-    int nelements = 1;
     data_t dt = {0};
-
-    for (int idim = 0; idim < ndims; idim++) {
-      nelements *= array_of_sizes[idim];
-    }
 
     dt.handle  = MPI_DATATYPE_NULL;
     dt.bytes   = mpi_sizeof(oldtype)*nelements;
     dt.commit  = 0;
     dt.flavour = DT_SUBARRAY;
 
-    mpi_data_type_add(mpi_info_, &dt, newtype);
+    mpi_data_type_add(mpi_info, &dt, newtype);
   }
-
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -2214,27 +1497,29 @@ int MPI_Type_create_subarray(int ndims, const int * array_of_sizes,
 int MPI_File_get_view(MPI_File fh, MPI_Offset * disp, MPI_Datatype * etype,
 		      MPI_Datatype * filetype, char * datarep) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_File_get_view";
+  FILE * fp = NULL;
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_FILE_MPI_ERR_FILE(fh, fname);
-  ERR_IF_FILE_MPI_ERR_ARG(fh, disp == NULL, fname);
-  ERR_IF_FILE_MPI_ERR_ARG(fh, etype == NULL, fname);
-  ERR_IF_FILE_MPI_ERR_ARG(fh, filetype == NULL, fname);
-  ERR_IF_FILE_MPI_ERR_ARG(fh, datarep == NULL, fname);
+  assert(disp);
+  assert(etype);
+  assert(filetype);
+  assert(datarep);
+  assert(mpi_info);
 
-  {
-    file_t * file = &mpi_info_->filelist[fh];
+  fp = mpi_file_handle_to_fp(mpi_info, fh);
 
+  if (fp == NULL) {
+    printf("MPI_File_get_view: invalid file handle\n");
+    exit(0);
+  }
+  else {
+    file_t * file = &mpi_info->filelist[fh];
     *disp = file->disp;
     *etype = file->etype;
     *filetype = file->filetype;
     strncpy(datarep, file->datarep, MPI_MAX_DATAREP_STRING-1);
   }
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 /*****************************************************************************
  *
@@ -2246,30 +1531,28 @@ int MPI_File_set_view(MPI_File fh, MPI_Offset disp, MPI_Datatype etype,
 		      MPI_Datatype filetype, const char * datarep,
 		      MPI_Info info) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_File_set_view()";
+  FILE * fp = NULL;
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_FILE_MPI_ERR_FILE(fh, fname);
-  ERR_IF_FILE_MPI_ERR_DATATYPE(fh, etype, fname);
-  ERR_IF_FILE_MPI_ERR_DATATYPE(fh, filetype, fname);
-  ERR_IF_FILE_MPI_ERR_ARG(fh, datarep == NULL, fname);
-  ERR_IF_FILE_MPI_ERR_ARG(fh, strcmp(datarep, "native") != 0, fname);
-  ERR_IF_FILE_MPI_ERR_INFO(fh, info, fname);
+  assert(datarep);
+  assert(mpi_info);
 
-  /* There is actually MPI_ERR_UNSUPPORTED_DATAREP */
+  fp = mpi_file_handle_to_fp(mpi_info, fh);
 
-  {
-    file_t * file = &mpi_info_->filelist[fh];
+  if (fp == NULL) {
+    printf("MPI_File_set_view: invalid file handle\n");
+    exit(0);
+  }
+  else {
+    file_t * file = &mpi_info->filelist[fh];
     file->disp = disp;
     file->etype = etype;
     file->filetype = filetype;
+    /* Could demand "native" ... */
     strncpy(file->datarep, datarep, MPI_MAX_DATAREP_STRING-1);
     /* info is currently discarded */
   }
 
- err:
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -2280,37 +1563,36 @@ int MPI_File_set_view(MPI_File fh, MPI_Offset disp, MPI_Datatype etype,
 
 int MPI_File_read_all(MPI_File fh, void * buf, int count,
 		      MPI_Datatype datatype, MPI_Status * status) {
+  FILE * fp = NULL;
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_File_read_all()";
+  assert(buf);
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_FILE_MPI_ERR_FILE(fh, fname);
-  ERR_IF_FILE_MPI_ERR_BUFFER(fh, buf, fname);
-  ERR_IF_FILE_MPI_ERR_COUNT(fh, count, fname);
-  ERR_IF_FILE_MPI_ERR_DATATYPE(fh, datatype, fname);
+  fp = mpi_file_handle_to_fp(mpi_info, fh);
 
-  {
-    FILE * fp = mpi_file_handle_to_fp(mpi_info_, fh);
+  if (fp == NULL) {
+    printf("MPI_File_read_all: invalid_file handle\n");
+    exit(0);
+  }
+  else {
 
     /* Translate to a simple fread() */
-    /* A short count of items indicates an error (eof or error) ... */
 
     size_t size   = mpi_sizeof(datatype);
     size_t nitems = count;
-    size_t nread  = fread(buf, size, nitems, fp);
+    size_t nr = fread(buf, size, nitems, fp);
 
+    if (nr != nitems) {
+      printf("MPI_File_read_all(): incorrect number of items in fread()\n");
+    }
 
-    if (nread < nitems) {
-      ifail = MPI_ERR_IO;
-      printf("MPI_File_read_all(): "); if (ferror(fp)) perror(NULL);
+    if (ferror(fp)) {
+      perror("perror: ");
+      printf("MPI_File_read_all() file operation failed\n");
+      exit(0);
     }
   }
 
- err:
-  if (status != MPI_STATUS_IGNORE) status->MPI_ERROR = ifail;
-
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -2322,35 +1604,36 @@ int MPI_File_read_all(MPI_File fh, void * buf, int count,
 int MPI_File_write_all(MPI_File fh, const void * buf, int count,
 		       MPI_Datatype datatype, MPI_Status * status) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_File_write_all()";
+  FILE * fp = NULL;
 
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_FILE_MPI_ERR_FILE(fh, fname);
-  ERR_IF_FILE_MPI_ERR_BUFFER(fh, buf, fname);
-  ERR_IF_FILE_MPI_ERR_COUNT(fh, count, fname);
-  ERR_IF_FILE_MPI_ERR_DATATYPE(fh, datatype, fname);
+  assert(buf);
 
-  {
-    FILE * fp = mpi_file_handle_to_fp(mpi_info_, fh);
+  fp = mpi_file_handle_to_fp(mpi_info, fh);
+
+  if (fp == NULL) {
+    printf("MPI_File_write_all: invalid_file handle");
+    exit(0);
+  }
+  else {
 
     /* Translate to a simple fwrite() */
-    /* A short count of items indicates an error ... */
 
     size_t size   = mpi_sizeof(datatype);
     size_t nitems = count;
-    size_t nwrite = fwrite(buf, size, nitems, fp);
+    size_t nw = fwrite(buf, size, nitems, fp);
 
-    if (nwrite < nitems) {
-      ifail = MPI_ERR_IO;
-      printf("MPI_File_write_all(): "); if (ferror(fp)) perror(NULL);
+    if (nw != nitems) {
+      printf("MPI_File_write_all(): incorrect number of items in fwrite()\n");
+    }
+
+    if (ferror(fp)) {
+      perror("perror: ");
+      printf("MPI_File_write_all() file operation failed\n");
+      exit(0);
     }
   }
 
- err:
-  if (status != MPI_STATUS_IGNORE) status->MPI_ERROR = ifail;
-
-  return ifail;
+  return MPI_SUCCESS;
 }
 
 /*****************************************************************************
@@ -2362,21 +1645,13 @@ int MPI_File_write_all(MPI_File fh, const void * buf, int count,
 int MPI_File_write_all_begin(MPI_File fh, const void * buf, int count,
 			     MPI_Datatype datatype) {
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_File_write_all_begin()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_FILE_MPI_ERR_FILE(fh, fname);
-  ERR_IF_FILE_MPI_ERR_BUFFER(fh, buf, fname);
-  ERR_IF_FILE_MPI_ERR_COUNT(fh, count, fname);
-  ERR_IF_FILE_MPI_ERR_DATATYPE(fh, datatype, fname);
-
   /* We are going to do it here and throw away the status */
 
-  ifail = MPI_File_write_all(fh, buf, count, datatype, MPI_STATUS_IGNORE);
+  MPI_Status status = {0};
 
- err:
-  return ifail;
+  MPI_File_write_all(fh, buf, count, datatype, &status);
+
+  return 0;
 }
 
 /*****************************************************************************
@@ -2390,35 +1665,22 @@ int MPI_File_write_all_end(MPI_File fh, const void * buf, MPI_Status * status) {
   /* A real implementation returns the number of bytes written in the
    * status object. */
 
-  int ifail = MPI_SUCCESS;
-  const char * fname = "MPI_File_write_all_end()";
-
-  ERR_IF_MPI_NOT_INITIALISED(fname);
-  ERR_IF_FILE_MPI_ERR_FILE(fh, fname);
-  ERR_IF_FILE_MPI_ERR_BUFFER(fh, buf, fname);
-
-  if (status != MPI_STATUS_IGNORE) status->MPI_ERROR = MPI_SUCCESS;
-
- err:
-  return ifail;
+  return 0;
 }
 
 #endif /* _DO_NOT_INCLUDE_MPI2_INTERFACE */
 
 /*****************************************************************************
  *
- *  mpi_err_comm
+ *  mpi_is_valid_comm
  *
  *****************************************************************************/
 
-static int mpi_err_comm(MPI_Comm comm) {
+int mpi_is_valid_comm(MPI_Comm comm) {
 
-  int ifail = MPI_SUCCESS;
+  if (comm < MPI_COMM_WORLD || comm >= MAX_CART_COMM) return 0;
 
-  if (comm <  MPI_COMM_WORLD) ifail = MPI_ERR_COMM;
-  if (comm >= MAX_CART_COMM)  ifail = MPI_ERR_COMM;
-
-  return ifail;
+  return 1;
 }
 
 /*****************************************************************************
@@ -2493,15 +1755,15 @@ static int mpi_data_type_free(mpi_info_t * ctxt, MPI_Datatype * handle) {
  *
  *****************************************************************************/
 
-static int mpi_data_type_handle(mpi_info_t * mpi, MPI_Datatype handle) {
+static int mpi_data_type_handle(mpi_info_t * ctxt, MPI_Datatype handle) {
 
   int index = MPI_DATATYPE_NULL;
 
-  assert(mpi);
-  assert(handle >= 0); /* i.e. MPI_DATATYPE_NULL or user data type. */
+  assert(ctxt);
+  assert(handle >= 0);
 
-  if (handle <= mpi->ndatatypelast) {
-    index = mpi->dt[handle].handle;
+  if (handle <= ctxt->ndatatypelast) {
+    index = ctxt->dt[handle].handle;
   }
 
   return index;
@@ -2517,13 +1779,12 @@ static int mpi_data_type_handle(mpi_info_t * mpi, MPI_Datatype handle) {
  *****************************************************************************/
 
 static MPI_File mpi_file_handle_retain(mpi_info_t * mpi, FILE * fp) {
-
+  
   MPI_File fh = MPI_FILE_NULL;
 
   assert(mpi);
   assert(fp);
 
-  /* Find a free handle */
   for (int ih = 1; ih < MAX_USER_FILE; ih++) {
     if (mpi->filelist[ih].fp == NULL) {
       fh = ih;
@@ -2531,10 +1792,13 @@ static MPI_File mpi_file_handle_retain(mpi_info_t * mpi, FILE * fp) {
     }
   }
 
-  if (fh != MPI_FILE_NULL) {
-    /* Record the pointer against the handle */
-    mpi->filelist[fh].fp = fp;
+  if (fh == MPI_FILE_NULL) {
+    printf("Run out of MPI file handles\n");
+    exit(0);
   }
+
+  /* Record the pointer against the handle */
+  mpi->filelist[fh].fp = fp;
 
   return fh;
 }
@@ -2580,330 +1844,4 @@ static FILE * mpi_file_handle_to_fp(mpi_info_t * mpi, MPI_File fh) {
   }
 
   return fp;
-}
-
-/*****************************************************************************
- *
- *  mpi_err_file
- *
- *  Returns MPI_SUCCESS if file is a valid file handle
- *  or MPI_ERR_FILE if invalid.
- *
- *****************************************************************************/
-
-static int mpi_err_file(MPI_File file) {
-
-  int ifail = MPI_SUCCESS;
-
-  assert(mpi_info_);
-
-  if (mpi_file_handle_to_fp(mpi_info_, file) == NULL) ifail = MPI_ERR_FILE;
-
-  return ifail;
-}
-
-/*****************************************************************************
- *
- *  mpi_err_count
- *
- *****************************************************************************/
-
-static int mpi_err_count(int count) {
-
-  int ifail = MPI_SUCCESS;
-
-  if (count < 0) ifail = MPI_ERR_COUNT;
-
-  return ifail;
-}
-
-/*****************************************************************************
- *
- *  mpi_err_datayupe
- *
- *****************************************************************************/
-
-static int mpi_err_datatype(MPI_Datatype dt) {
-
-  int ifail = MPI_SUCCESS;
-
-  if (mpi_datatype_intrinsic(dt) == 0 && mpi_datatype_user(dt) == 0) {
-    ifail = MPI_ERR_DATATYPE;
-  }
-
-  return ifail;
-}
-
-/*****************************************************************************
- *
- *  mpi_err_arg
- *
- ****************************************************************************/
-
-static int mpi_err_arg(int arg) {
-
-  int ifail = MPI_SUCCESS;
-
-  if (arg) ifail = MPI_ERR_ARG; /* (sic) arg is a condition for failure */
-
-  return ifail;
-}
-
-/*****************************************************************************
- *
- *  mpi_err_amode
- *
- *  amode is the mode argument to MPI_File_open(); this returns
- *  MPI_ERR_AMODE if amode is invalid.
- *
- *****************************************************************************/
-
-static int mpi_err_amode(int amode) {
-
-  int ifail = MPI_SUCCESS;
-
-  {
-    int have_rdonly = (amode & MPI_MODE_RDONLY) ? 1 : 0;
-    int have_wronly = (amode & MPI_MODE_WRONLY) ? 2 : 0;
-    int have_rdwr   = (amode & MPI_MODE_RDWR)   ? 4 : 0;
-
-    int have_create = (amode & MPI_MODE_CREATE);
-    int have_excl   = (amode & MPI_MODE_EXCL);
-
-    switch (have_rdonly + have_wronly + have_rdwr) {
-    case (1):
-      /* Read only cannot have ... */
-      if (have_create) ifail = MPI_ERR_AMODE;
-      if (have_excl)   ifail = MPI_ERR_AMODE;
-      break;
-    case (2):
-      /* Write only  */
-      break;
-    case (4):
-      /* Read write */
-      break;
-    default:
-      /* Not recognised */
-      ifail = MPI_ERR_AMODE;
-    }
-  }
-
-  return ifail;
-}
-
-/*****************************************************************************
- *
- *  mpi_err_buffer
- *
- *****************************************************************************/
-
-static int mpi_err_buffer(const void * buf) {
-
-  int ifail = MPI_SUCCESS;
-
-  if (!buf) ifail = MPI_ERR_BUFFER;
-
-  return ifail;
-}
-
-/*****************************************************************************
- *
- *  mpi_err_errhandler
- *
- *****************************************************************************/
-
-static int mpi_err_errhandler(MPI_Errhandler errhandler) {
-
-  int ifail = MPI_SUCCESS;
-
-  if (errhandler != MPI_ERRORS_ARE_FATAL) ifail = MPI_ERR_ERRHANDLER;
-
-  return ifail;
-}
-
-/*****************************************************************************
- *
- *  mpi_err_info
- *
- *****************************************************************************/
-
-static int mpi_err_info(MPI_Info info) {
-
-  int ifail = MPI_SUCCESS;
-
-  if (info != MPI_INFO_NULL) {
-    /* At the moment, only MPI_INFO_NULL is handled */
-    ifail = MPI_ERR_INTERN;
-  }
-
-  return ifail;
-}
-
-/*****************************************************************************
- *
- *  mpi_err_op
- *
- *****************************************************************************/
-
-static int mpi_err_op(MPI_Op op) {
-
-  int ifail = MPI_SUCCESS;
-
-  /* Any recognised op is fine (except MPI_OP_NULL).
-   * Strictly, the validity of an op depends on additional information
-   * such as data type, so this is very simple ... */
-
-  if (op < 0)        ifail = MPI_ERR_OP;
-  if (op > MPI_LXOR) ifail = MPI_ERR_OP;
-
-  return ifail;
-}
-
-/*****************************************************************************
- *
- *  mpi_err_rank
- *
- *****************************************************************************/
-
-static int mpi_err_rank(int rank) {
-
-  int ifail = MPI_SUCCESS;
-
-  if (rank != 0)              ifail = MPI_ERR_RANK;
-  if (rank == MPI_ANY_SOURCE) ifail = MPI_SUCCESS;    /* ... but this ok */
-  if (rank == MPI_PROC_NULL)  ifail = MPI_SUCCESS;    /* also ok. */
-
-  return ifail;
-}
-
-/*****************************************************************************
- *
- *  mpi_err_root
- *
- *****************************************************************************/
-
-static int mpi_err_root(int root) {
-
-  int ifail = MPI_SUCCESS;
-
-  if (root != 0) ifail = MPI_ERR_ROOT;
-
-  return ifail;
-}
-
-/*****************************************************************************
- *
- *  mpi_err_tag
- *
- *****************************************************************************/
-
-static int mpi_err_tag(int tag) {
-
-  int ifail = MPI_SUCCESS;
-
-  if (tag <= 0) ifail = MPI_ERR_TAG;
-  if (tag == MPI_ANY_TAG) ifail = MPI_SUCCESS; /* MPI_ANY_TAG < 0 */
-
-  return ifail;
-}
-
-/*****************************************************************************
- *
- *  mpi_comm_errors_are_fatal
- *
- *  The first optional argument must be present, and it should be a
- *  format string suitable for a printf()-like function. Remaining
- *  arguments should be consistent with the format.
- *
- *  This is fatal if ifail != MPI_SUCCESS.
- *
- *****************************************************************************/
-
-static void mpi_comm_errors_are_fatal(MPI_Comm * comm, int * ifail, ...) {
-
-  assert(comm);
-  assert(ifail);
-
-  if (*ifail != MPI_SUCCESS) {
-    va_list ap;
-    va_start(ap, ifail);
-    {
-      const char * fmt = va_arg(ap, const char *);
-      printf("MPI_ERRORS_ARE_FATAL: ");
-      vprintf(fmt, ap);
-      printf(" (comm = %d)\n", *comm);
-    }
-    va_end(ap);
-    exit(-1);
-  }
-
-  return;
-}
-
-/*****************************************************************************
- *
- *  mpi_file_errors_return
- *
- *  I'm going to store the error string, but I don't know if there's
- *  anything to be done with it...
- *
- *****************************************************************************/
-
-static void mpi_file_errors_return(MPI_File * file, int * ifail, ...) {
-
-  assert(file);
-  assert(ifail);
-
-  if (*ifail != MPI_SUCCESS) {
-    char * errorstr = mpi_info_->filelist[*file].errorstr;
-    va_list ap;
-    va_start(ap, ifail);
-    {
-      const char * fmt = va_arg(ap, const char *);
-      vsnprintf(errorstr, MPI_MAX_ERROR_STRING-1, fmt, ap);
-    }
-    va_end(ap);
-  }
-
-  return;
-}
-
-/*****************************************************************************
- *
- *  mpi_datatype_intrinsic
- *
- *****************************************************************************/
-
-static int mpi_datatype_intrinsic(MPI_Datatype dt) {
-
-  int intrinsic = 0;
-
-  /* Is dt an intrinsic datatype? See mpi.h */
-
-  if (MPI_CHAR >= dt && dt >= MPI_INT64_T) intrinsic = 1;
-
-  return intrinsic;
-}
-
-/*****************************************************************************
- *
- *  mpi_datatype_user
- *
- *****************************************************************************/
-
-static int mpi_datatype_user(MPI_Datatype dt) {
-
-  int isuser = 0;
-
-  assert(mpi_info_);
-  assert(MPI_DATATYPE_NULL == 0);   /* mpi_info->dt[0] is null */
-
-  /* Is dt a valid user datatype */
-
-  if (0 < dt && dt <= MAX_USER_DT) {
-    /* check the list */
-    if (mpi_info_->dt[dt].handle != MPI_DATATYPE_NULL) isuser = 1;
-  }
-
-  return isuser;
 }

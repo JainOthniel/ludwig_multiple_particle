@@ -6,7 +6,7 @@
  *  Edinburgh Soft Matter and Statistical Physics Group and
  *  Edinburgh Parallel Computing Centre
  *
- *  (c) 2023-2024 The University of Edinburgh
+ *  (c) 2023 The University of Edinburgh
  *
  *  Kevin Stratford (kevin@epcc.ed.ac.uk)
  *
@@ -69,10 +69,9 @@ int stencil_d3q19_create(stencil_t ** stencil) {
 
  err:
 
-  free(s->wgradients);
-  free(s->wlaplacian);
-  free(s->cv);
-  free(s);
+  if (s->wgradients) free(s->wgradients);
+  if (s->wlaplacian) free(s->wlaplacian);
+  if (s->cv) free(s->cv);
 
   *stencil = NULL;
 

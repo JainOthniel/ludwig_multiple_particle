@@ -135,15 +135,28 @@ int main(int argc, char ** argv) {
   for (nf = 1; nf <= nfile; nf++) {
 
     char filename[BUFSIZ] = {0};
+    
+    
 
-    /* We expect extensions 00n-001 00n-002 ... 00n-00n */
+    /* We expect extensions 00n-001 00n-002 ... 00n-00n */ 
+    if (strncmp(argv[1], "config.cds.init.", 16) == 0) {
+    	sprintf(filename, "config.cds.init.%3.3d-%3.3d", nfile, nf);
+    	printf("Filename: %s\n", filename);
 
-    sprintf(filename, "config.cds%8.8d.%3.3d-%3.3d", ntime, nfile, nf);
-    printf("Filename: %s\n", filename);
+    	fp_colloids = util_fopen(filename, "r");
+  }
+  
+  
+  else {
+  	sprintf(filename, "config.cds%8.8d.%3.3d-%3.3d", ntime, nfile, nf);
+    	printf("Filename: %s\n", filename);
 
-    fp_colloids = util_fopen(filename, "r");
-
-
+    	fp_colloids = util_fopen(filename, "r");
+    	}
+    	
+    	
+    	
+    	
     if (fp_colloids == NULL) {
       printf("fopen(%s) failed\n", filename);
       exit(0);

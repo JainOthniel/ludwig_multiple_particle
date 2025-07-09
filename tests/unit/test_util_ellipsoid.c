@@ -5,7 +5,7 @@
  *  Edinburgh Soft Matter and Statistical Physics Group and
  *  Edinburgh Parallel Computing Centre
  *
- *  (c) 2023-2025 The University of Edinburgh
+ *  (c) 2023-2024 The University of Edinburgh
  *
  *  Contributing authors:
  *  Kevin Stratford (kevin@epcc.ed.ac.uk)
@@ -891,8 +891,7 @@ int test_util_q4_distance_to_tangent_plane(void) {
       double d = -1.0;
       double nhat[3] = {0.0, 0.0, 1.0};
       d = util_q4_distance_to_tangent_plane(abc, q, nhat);
-      ifail = !(fabs(d - c) < DBL_EPSILON);
-      assert(ifail == 0);
+      assert(fabs(d - c) < DBL_EPSILON);
     }
 
     /* y-z plane */
@@ -900,8 +899,7 @@ int test_util_q4_distance_to_tangent_plane(void) {
       double d = -1.0;
       double nhat[3] = {1.0, 0.0, 0.0};
       d = util_q4_distance_to_tangent_plane(abc, q, nhat);
-      ifail = !(fabs(d - a) < DBL_EPSILON);
-      assert(ifail == 0);
+      assert(fabs(d - a) < DBL_EPSILON);
     }
 
     /* x-z plane */
@@ -909,8 +907,7 @@ int test_util_q4_distance_to_tangent_plane(void) {
       double d = -1.0;
       double nhat[3] = {0.0, 1.0, 0.0};
       d = util_q4_distance_to_tangent_plane(abc, q, nhat);
-      ifail = !(fabs(d - b) < DBL_EPSILON);
-      assert(ifail == 0);
+      assert(fabs(d - b) < DBL_EPSILON);
     }
   }
 
@@ -930,8 +927,7 @@ int test_util_q4_distance_to_tangent_plane(void) {
       double d = -1.0;
       double nhat[3] = {0.0, 0.0, -1.0};
       d = util_q4_distance_to_tangent_plane(abc, q, nhat);
-      ifail = !(fabs(d - c) < FLT_EPSILON);
-      assert(ifail == 0);
+      assert(fabs(d - c) < FLT_EPSILON);
     }
     /* y-z plane */
     {
@@ -939,8 +935,7 @@ int test_util_q4_distance_to_tangent_plane(void) {
       double d0 = a*a*cos(phi)*cos(phi) + b*b*sin(phi)*sin(phi);
       double nhat[3] = {-1.0, 0.0, 0.0};
       d = util_q4_distance_to_tangent_plane(abc, q, nhat);
-      ifail = !(fabs(d - sqrt(d0)) < FLT_EPSILON);
-      assert(ifail == 0);
+      assert(fabs(d - sqrt(d0)) < FLT_EPSILON);
     }
   }
 
@@ -960,8 +955,7 @@ int test_util_q4_distance_to_tangent_plane(void) {
       double d = -1.0;
       double nhat[3] = {0.0, 0.0, -1.0};
       d = util_q4_distance_to_tangent_plane(abc, q, nhat);
-      ifail = !(fabs(d - c) < FLT_EPSILON);
-      assert(ifail == 0);
+      assert(fabs(d - c) < FLT_EPSILON);
     }
     /* y-z plane */
     {
@@ -969,8 +963,7 @@ int test_util_q4_distance_to_tangent_plane(void) {
       double d0 = a*a*cos(phi)*cos(phi) + b*b*sin(phi)*sin(phi);
       double nhat[3] = {-1.0, 0.0, 0.0};
       d = util_q4_distance_to_tangent_plane(abc, q, nhat);
-      ifail = !(fabs(d - sqrt(d0)) < FLT_EPSILON);
-      assert(ifail == 0);
+      assert(fabs(d - sqrt(d0)) < FLT_EPSILON);
     }
   }
 
@@ -989,8 +982,7 @@ int test_util_q4_distance_to_tangent_plane(void) {
       double d = -1.0;
       double nhat[3] = {+1.0, 0.0, 0.0};
       d = util_q4_distance_to_tangent_plane(abc, q, nhat);
-      ifail = !(fabs(d - b) < FLT_EPSILON);
-      assert(ifail == 0);
+      assert(fabs(d - b) < FLT_EPSILON);
     }
   }
 
@@ -1009,8 +1001,7 @@ int test_util_q4_distance_to_tangent_plane(void) {
       double d = -1.0;
       double nhat[3] = {+1.0, 0.0, 0.0};
       d = util_q4_distance_to_tangent_plane(abc, q, nhat);
-      ifail = !(fabs(d - c) < FLT_EPSILON);
-      assert(ifail == 0);
+      assert(fabs(d - c) < FLT_EPSILON);
     }
   }
 
