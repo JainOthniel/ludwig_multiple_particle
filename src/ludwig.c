@@ -996,6 +996,58 @@ void ludwig_run(const char * inputfile) {
     TIMER_stop(TIMER_DIAGNOSTIC_OUTPUT);
     TIMER_stop(TIMER_STEPS); /* inclusive of diagnostic/io */
 
+  // added as extra 
+    MPI_Barrier(comm);
+    int iic = 1; int jjc = 1; int kkc = 1;
+    int rank111 = 5;
+    // MPI_Comm_rank(comm, *rank1);
+    
+
+    // cs_nlocal(field->cs, int nlocal);
+
+    MPI_Barrier(comm);
+    // printf("\n rank = %d, nlocal = %d , %d, %d\n",pe_mpi_rank(ludwig->pe),ludwig->cs->param->nlocal[X],ludwig->cs->param->nlocal[Y],ludwig->cs->param->nlocal[Z]) ;
+ 
+    // printf("\n rank  = %d, nhalo = %d\n",pe_mpi_rank(ludwig->pe), ludwig->cs->param->nhalo);
+
+    // printf("\n rank = %d, listnlocal = %e , %e, %e\n",pe_mpi_rank(ludwig->pe),ludwig->cs->listnlocal[X], 
+    // ludwig->cs->listnlocal[Y],ludwig->cs->listnlocal[Z]);
+
+    printf("\n rank = %d, noffset = %d , %d, %d\n",pe_mpi_rank(ludwig->pe), ludwig->cs->param->noffset[X], 
+    ludwig->cs->param->noffset[Y],ludwig->cs->param->noffset[Z]);
+
+    printf("\n rank = %d, mpi_carts = %d , %d, %d\n",pe_mpi_rank(ludwig->pe), ludwig->cs->param->mpi_cartsz[X],
+    ludwig->cs->param->mpi_cartsz[Y],ludwig->cs->param->mpi_cartsz[Z]);
+
+    printf("\n rank = %d, mpi_cartscoords = %d , %d, %d\n",pe_mpi_rank(ludwig->pe), ludwig->cs->param->mpi_cartcoords[X],
+    ludwig->cs->param->mpi_cartcoords[Y],ludwig->cs->param->mpi_cartcoords[Z]);
+    // if (rank111 == pe_mpi_rank(ludwig->pe)){
+    //     printf("x = %d, y = %d, z = %d", ludwig->cs->param->noffset[X] + iic, ludwig->cs->param->noffset[Y] + jjc, ludwig->cs->param->noffset[Z] + kkc);
+
+    // }
+    MPI_Barrier(comm);
+
+
+
+
+    // if((iic >= 1 - ludwig->cs->param->nhalo) &&
+    // (jjc >= 1 - ludwig->cs->param->nhalo) &&
+    // (kkc >= 1 - ludwig->cs->param->nhalo) &&
+    // (iic <= ludwig->cs->param->nlocal[X] + ludwig->cs->param->nhalo) &&
+    // (jjc <= ludwig->cs->param->nlocal[Y] + ludwig->cs->param->nhalo) &&
+    // (kkc <= ludwig->cs->param->nlocal[Z] + ludwig->cs->param->nhalo)) {
+
+    //   printf("\n rank = %d\n",1) ;
+
+    // }
+    // else {
+    //   printf("\n rank = %d\n", 2);
+
+    // }
+
+
+    MPI_Barrier(comm);
+    //
     /* Next time step */
   }
 
