@@ -123,6 +123,7 @@
 #include "fe_ternary_stats.h"
 
 #include "ludwig.h"
+#include "tracer.h"
 
 typedef struct ludwig_s ludwig_t;
 struct ludwig_s {
@@ -176,6 +177,7 @@ struct ludwig_s {
   stats_rheo_t * stat_rheo;    /* Rheology diagnostics */
   stats_turb_t * stat_turb;    /* Turbulent diagnostics */
   timekeeper_t tk;             /* Time keeper */
+  trac * tr;
 };
 
 static int ludwig_rt(ludwig_t * ludwig);
@@ -525,11 +527,38 @@ void ludwig_run(const char * inputfile) {
   /* sync tasks before main loop for timing purposes */
   MPI_Barrier(comm);
 
+  //added as extra jain
+  // double pos[3]={0.000040075,6.3024,1.0};
+  double pos[3]={25.0,8.0,1.0};
+  // double uu[3];
+
+  /*if (pe_mpi_rank(ludwig->pe) == 0) {
+        printf("Enter X position: ");
+        fflush(stdout);
+        scanf("%lf", &pos[X]);
+        printf("Enter Y position: ");
+        fflush(stdout);
+        scanf("%lf", &pos[Y]);
+        printf("Enter Z position: ");
+        fflush(stdout);
+        scanf("%lf", &pos[Z]);
+  }
+
+  MPI_Bcast(pos, 3, MPI_DOUBLE, 0, comm); 
+  MPI_Barrier(comm);*/
+
+  tracer_create(ludwig->cs, &ludwig->tr);
+  tracer_init(ludwig->tr, ludwig->cs, pos);
+  tracer_init_file(ludwig->cs, ludwig->tr);
+  /* make sure cart communicator and rank info are available */
+  MPI_Barrier(comm);
+
   while (physics_control_next_step(ludwig->phys)) {
 
     TIMER_start(TIMER_STEPS);
-
     step = physics_control_timestep(ludwig->phys);
+
+    if (step <= 5000){
 
     if (ludwig->hydro) {
       hydro_f_zero(ludwig->hydro, fzero);
@@ -996,61 +1025,67 @@ void ludwig_run(const char * inputfile) {
     TIMER_stop(TIMER_DIAGNOSTIC_OUTPUT);
     TIMER_stop(TIMER_STEPS); /* inclusive of diagnostic/io */
 
-  // added as extra 
     MPI_Barrier(comm);
-    int iic = 1; int jjc = 1; int kkc = 1;
-    int rank111 = 5;
-    // MPI_Comm_rank(comm, *rank1);
+
+    // hydro_u_halo(ludwig->hydro); // collect halo for all ranks
+    }
+    // MPI_Barrier(comm);
+    if (step == 5000){
+       hydro_u_halo(ludwig->hydro); // collect halo for all ranks
+    }
+    if (step > 5000){
+      
+     tracer_position_update(ludwig->cs, ludwig->hydro, ludwig->tr);
+     /*if (cs_cart_rank(ludwig->cs) == ludwig->tr->rank_current_ts){
+        printf("\n%d,%e,%e,%e,%e,%e,%e\n", step,
+          ludwig->tr->tr_d->tr_actual_pos[X], ludwig->tr->tr_d->tr_actual_pos[Y], ludwig->tr->tr_d->tr_actual_pos[Z],
+        ludwig->tr->tr_d->tr_u[X], ludwig->tr->tr_d->tr_u[Y],ludwig->tr->tr_d->tr_u[Z]);
+        
+     }*/
+     tracer_write_file(ludwig->cs, ludwig->tr, step);
+    }
+    // MPI_Barrier(comm);
+
+
+    /*tracer_periodic_local_pos_update(ludwig->cs, pos, pos);
+    if (cs_cart_rank(ludwig->cs) == 0){
+    printf("\nx = %lf, y = %lf, z = %lf\n", pos[X], pos[Y], pos[Z]);
+    }*/
     
+    /*if(physics_control_timestep(ludwig->phys) == 1){
+      if (pe_mpi_rank(ludwig->pe) == 0) {
+        printf("Enter X position: ");
+        fflush(stdout);
+        scanf("%lf", &pos[X]);
+        printf("Enter Y position: ");
+        fflush(stdout);
+        scanf("%lf", &pos[Y]);
+        printf("Enter Z position: ");
+        fflush(stdout);
+        scanf("%lf", &pos[Z]);
+         printf("\ncomputed_rank = %d, rank = %d\n", tracer_pos_rank(ludwig->cs, pos), cs_cart_rank(ludwig->cs));
+    }
+    }*/
 
-    // cs_nlocal(field->cs, int nlocal);
-
-    MPI_Barrier(comm);
-    // printf("\n rank = %d, nlocal = %d , %d, %d\n",pe_mpi_rank(ludwig->pe),ludwig->cs->param->nlocal[X],ludwig->cs->param->nlocal[Y],ludwig->cs->param->nlocal[Z]) ;
- 
-    // printf("\n rank  = %d, nhalo = %d\n",pe_mpi_rank(ludwig->pe), ludwig->cs->param->nhalo);
-
-    // printf("\n rank = %d, listnlocal = %e , %e, %e\n",pe_mpi_rank(ludwig->pe),ludwig->cs->listnlocal[X], 
-    // ludwig->cs->listnlocal[Y],ludwig->cs->listnlocal[Z]);
-
-    printf("\n rank = %d, noffset = %d , %d, %d\n",pe_mpi_rank(ludwig->pe), ludwig->cs->param->noffset[X], 
-    ludwig->cs->param->noffset[Y],ludwig->cs->param->noffset[Z]);
-
-    printf("\n rank = %d, mpi_carts = %d , %d, %d\n",pe_mpi_rank(ludwig->pe), ludwig->cs->param->mpi_cartsz[X],
-    ludwig->cs->param->mpi_cartsz[Y],ludwig->cs->param->mpi_cartsz[Z]);
-
-    printf("\n rank = %d, mpi_cartscoords = %d , %d, %d\n",pe_mpi_rank(ludwig->pe), ludwig->cs->param->mpi_cartcoords[X],
-    ludwig->cs->param->mpi_cartcoords[Y],ludwig->cs->param->mpi_cartcoords[Z]);
-    // if (rank111 == pe_mpi_rank(ludwig->pe)){
-    //     printf("x = %d, y = %d, z = %d", ludwig->cs->param->noffset[X] + iic, ludwig->cs->param->noffset[Y] + jjc, ludwig->cs->param->noffset[Z] + kkc);
-
+    // for(int dim = X; dim < 3; dim++){
+    // printf("\nrank = %d, dim = %d, mpi_neighbour_for = %d, mpi_neighbour_bac = %d\n", cs_cart_rank(ludwig->cs), dim
+    //                         , cs_cart_neighb(ludwig->cs,FORWARD,dim),  cs_cart_neighb(ludwig->cs,BACKWARD,dim));
     // }
-    MPI_Barrier(comm);
-
-
-
-
-    // if((iic >= 1 - ludwig->cs->param->nhalo) &&
-    // (jjc >= 1 - ludwig->cs->param->nhalo) &&
-    // (kkc >= 1 - ludwig->cs->param->nhalo) &&
-    // (iic <= ludwig->cs->param->nlocal[X] + ludwig->cs->param->nhalo) &&
-    // (jjc <= ludwig->cs->param->nlocal[Y] + ludwig->cs->param->nhalo) &&
-    // (kkc <= ludwig->cs->param->nlocal[Z] + ludwig->cs->param->nhalo)) {
-
-    //   printf("\n rank = %d\n",1) ;
-
+    //double uu[3];
+    
+    // hydro_u_halo(ludwig->hydro);
+    // ludwig->tr->cs = ludwig->cs;
+    // int index = cs_index(ludwig->tr->cs,2,17,1);
+    // hydro_u(ludwig->hydro, index, uu);
+    // for(int dim = X; dim < 3; dim++){
+    // printf("\nrank = %d, dim = %d, uu = %e\n", cs_cart_rank(ludwig->cs),
+    //                         dim,uu[dim]);
     // }
-    // else {
-    //   printf("\n rank = %d\n", 2);
-
-    // }
-
-
     MPI_Barrier(comm);
     //
     /* Next time step */
   }
-
+  tracer_close_file(ludwig->tr);
 
   /* End of time step loop. A barrier, before closing down. */
   MPI_Barrier(comm);
@@ -1100,7 +1135,7 @@ void ludwig_run(const char * inputfile) {
   if (ludwig->fe) ludwig->fe->func->free(ludwig->fe);
 
   TIMER_stop(TIMER_TOTAL);
-  TIMER_statistics();
+  // TIMER_statistics();
 
   physics_free(ludwig->phys);
   if (ludwig->le) lees_edw_free(ludwig->le);
@@ -1222,7 +1257,6 @@ int free_energy_init_rt(ludwig_t * ludwig) {
   pe = ludwig->pe;
   rt = ludwig->rt;
   cs_create(pe,&cs);
-
   lees_edw_init_rt(rt, info);
 
   n = rt_string_parameter(rt, "free_energy", description, BUFSIZ);

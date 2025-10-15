@@ -320,6 +320,9 @@ int MPI_File_write_all(MPI_File fh, const void * buf, int count,
 int MPI_File_write_all_begin(MPI_File fh, const void * buf, int count,
 			     MPI_Datatype datatype);
 int MPI_File_write_all_end(MPI_File fh, const void * buf, MPI_Status * status);
+int MPI_File_write_at(MPI_File fh, MPI_Offset offset,
+		const void *buf, int count, int datatype, MPI_Status *status);
+int MPI_File_get_size(MPI_File fh, MPI_Offset *size);
 
 #ifdef __cplusplus
 }

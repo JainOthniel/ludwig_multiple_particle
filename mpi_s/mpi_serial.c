@@ -2314,6 +2314,93 @@ int MPI_File_read_all(MPI_File fh, void * buf, int count,
 }
 
 /*****************************************************************************
+ * added jain
+ *  MPI_File_get_size
+ *
+ *****************************************************************************/
+
+int MPI_File_get_size(MPI_File fh, MPI_Offset *size) {
+
+    int ifail = MPI_SUCCESS;
+    const char *fname = "MPI_File_get_size()";
+
+    ERR_IF_MPI_NOT_INITIALISED(fname);
+    ERR_IF_FILE_MPI_ERR_FILE(fh, fname);
+    ERR_IF_FILE_MPI_ERR_SIZE(size, fname);  // you can define this macro to check null
+
+    {
+      FILE *fp = mpi_file_handle_to_fp(mpi_info_, fh);
+
+      /* --- Move to the end of file to get its size --- */
+      if (fseek(fp, 0, SEEK_END) != 0) {
+          perror("MPI_File_get_size(): fseek failed");
+          ifail = MPI_ERR_IO;
+          goto err;
+      }
+
+      long filesize = ftell(fp);  // get current file pointer = file size
+      if (filesize < 0) {
+          perror("MPI_File_get_size(): ftell failed");
+          ifail = MPI_ERR_IO;
+          goto err;
+      }
+
+      *size = (MPI_Offset)filesize;
+
+      /*move pointer back to beginning */
+      fseek(fp, 0, SEEK_SET);
+    }
+
+err:
+    return ifail;
+}
+
+/*****************************************************************************
+ * added jain
+ *  MPI_File_write_at
+ *
+ *****************************************************************************/
+int MPI_File_write_at(MPI_File fh, MPI_Offset offset,
+    const void *buf, int count, MPI_Datatype datatype, MPI_Status *status) {
+
+  int ifail = MPI_SUCCESS;
+  const char *fname = "MPI_File_write_at()";
+
+  ERR_IF_MPI_NOT_INITIALISED(fname);
+  ERR_IF_FILE_MPI_ERR_FILE(fh, fname);
+  ERR_IF_FILE_MPI_ERR_BUFFER(fh, buf, fname);
+  ERR_IF_FILE_MPI_ERR_COUNT(fh, count, fname);
+  ERR_IF_FILE_MPI_ERR_DATATYPE(fh, datatype, fname);
+
+  {
+    FILE *fp = mpi_file_handle_to_fp(mpi_info_, fh);
+
+    size_t size   = mpi_sizeof(datatype);
+    size_t nitems = count;
+
+    /* Seek to the desired byte offset before writing */
+    if (fseek(fp, offset, SEEK_SET) != 0) {
+      perror("MPI_File_write_at(): fseek failed");
+      ifail = MPI_ERR_IO;
+      goto err;
+    }
+
+    /* Write data */
+    size_t nwrite = fwrite(buf, size, nitems, fp);
+
+    if (nwrite < nitems) {
+      ifail = MPI_ERR_IO;
+      printf("MPI_File_write_at(): ");
+      if (ferror(fp)) perror(NULL);
+    }
+  }
+
+ err:
+  if (status != MPI_STATUS_IGNORE) status->MPI_ERROR = ifail;
+  return ifail;
+}
+
+/*****************************************************************************
  *
  *  MPI_File_write_all
  *
