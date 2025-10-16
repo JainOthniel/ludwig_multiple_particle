@@ -123,7 +123,7 @@
 #include "fe_ternary_stats.h"
 
 #include "ludwig.h"
-#include "tracer.h"
+#include "tracers.h"
 
 typedef struct ludwig_s ludwig_t;
 struct ludwig_s {
@@ -177,7 +177,7 @@ struct ludwig_s {
   stats_rheo_t * stat_rheo;    /* Rheology diagnostics */
   stats_turb_t * stat_turb;    /* Turbulent diagnostics */
   timekeeper_t tk;             /* Time keeper */
-  trac * tr;
+  trs_info *tinfo;
 };
 
 static int ludwig_rt(ludwig_t * ludwig);
@@ -529,7 +529,7 @@ void ludwig_run(const char * inputfile) {
 
   //added as extra jain
   // double pos[3]={0.000040075,6.3024,1.0};
-  double pos[3]={25.0,8.0,1.0};
+  // double pos[3]={25.0,8.0,1.0};
   // double uu[3];
 
   /*if (pe_mpi_rank(ludwig->pe) == 0) {
@@ -546,10 +546,28 @@ void ludwig_run(const char * inputfile) {
 
   MPI_Bcast(pos, 3, MPI_DOUBLE, 0, comm); 
   MPI_Barrier(comm);*/
+  int rank = cs_cart_rank(ludwig->cs);
+  // printf("passed by rank %d", rank);
+  tracers_create(ludwig->cs, ludwig->pe, ludwig->rt, &ludwig->tinfo);
+  int N = ludwig->tinfo->Ntracers;
+  // if (rank == 0){
+  //   for(int n=0; n<N; n++){
+  //     printf("n = %d, X = %f, Y = %f, Z = %f\n", n +1, ludwig->tinfo->tr_array[n].intial_pos[X],
+  //           ludwig->tinfo->tr_array[n].intial_pos[Y], ludwig->tinfo->tr_array[n].intial_pos[Z]);
+  //   }
+  // }
+  for(int n=0; n<ludwig->tinfo->ntracers_local; n++){
+      printf("\nrank = %d, n = %d, X = %f, Y = %f, Z = %f\n", rank, ludwig->tinfo->tr_array[n].tracer_id, 
+        ludwig->tinfo->tr_array[n].intial_pos[X],
+            ludwig->tinfo->tr_array[n].intial_pos[Y], ludwig->tinfo->tr_array[n].intial_pos[Z]);
+    }
 
-  tracer_create(ludwig->cs, &ludwig->tr);
-  tracer_init(ludwig->tr, ludwig->cs, pos);
-  tracer_init_file(ludwig->cs, ludwig->tr);
+  int total_trac;
+  MPI_Reduce(&ludwig->tinfo->ntracers_local,&total_trac, 1, MPI_INT, MPI_SUM, 0, comm);
+  if (rank == 0) printf("\ntotal_trac = %d\n", total_trac);
+  // tracer_create(ludwig->cs, &ludwig->tr);
+  // tracer_init(ludwig->tr, ludwig->cs, pos);
+  // tracer_init_file(ludwig->cs, ludwig->tr);
   /* make sure cart communicator and rank info are available */
   MPI_Barrier(comm);
 
@@ -558,7 +576,7 @@ void ludwig_run(const char * inputfile) {
     TIMER_start(TIMER_STEPS);
     step = physics_control_timestep(ludwig->phys);
 
-    if (step <= 5000){
+    if (step <5000){
 
     if (ludwig->hydro) {
       hydro_f_zero(ludwig->hydro, fzero);
@@ -1030,62 +1048,25 @@ void ludwig_run(const char * inputfile) {
     // hydro_u_halo(ludwig->hydro); // collect halo for all ranks
     }
     // MPI_Barrier(comm);
-    if (step == 5000){
+    /*if (step == 5000){
        hydro_u_halo(ludwig->hydro); // collect halo for all ranks
-    }
-    if (step > 5000){
+    }*/
+    if (step > 5000 ){
       
-     tracer_position_update(ludwig->cs, ludwig->hydro, ludwig->tr);
+    //  tracer_position_update(ludwig->cs, ludwig->hydro, ludwig->tr);
      /*if (cs_cart_rank(ludwig->cs) == ludwig->tr->rank_current_ts){
         printf("\n%d,%e,%e,%e,%e,%e,%e\n", step,
           ludwig->tr->tr_d->tr_actual_pos[X], ludwig->tr->tr_d->tr_actual_pos[Y], ludwig->tr->tr_d->tr_actual_pos[Z],
         ludwig->tr->tr_d->tr_u[X], ludwig->tr->tr_d->tr_u[Y],ludwig->tr->tr_d->tr_u[Z]);
         
      }*/
-     tracer_write_file(ludwig->cs, ludwig->tr, step);
+    //  tracer_write_file(ludwig->cs, ludwig->tr, step);
     }
-    // MPI_Barrier(comm);
-
-
-    /*tracer_periodic_local_pos_update(ludwig->cs, pos, pos);
-    if (cs_cart_rank(ludwig->cs) == 0){
-    printf("\nx = %lf, y = %lf, z = %lf\n", pos[X], pos[Y], pos[Z]);
-    }*/
-    
-    /*if(physics_control_timestep(ludwig->phys) == 1){
-      if (pe_mpi_rank(ludwig->pe) == 0) {
-        printf("Enter X position: ");
-        fflush(stdout);
-        scanf("%lf", &pos[X]);
-        printf("Enter Y position: ");
-        fflush(stdout);
-        scanf("%lf", &pos[Y]);
-        printf("Enter Z position: ");
-        fflush(stdout);
-        scanf("%lf", &pos[Z]);
-         printf("\ncomputed_rank = %d, rank = %d\n", tracer_pos_rank(ludwig->cs, pos), cs_cart_rank(ludwig->cs));
-    }
-    }*/
-
-    // for(int dim = X; dim < 3; dim++){
-    // printf("\nrank = %d, dim = %d, mpi_neighbour_for = %d, mpi_neighbour_bac = %d\n", cs_cart_rank(ludwig->cs), dim
-    //                         , cs_cart_neighb(ludwig->cs,FORWARD,dim),  cs_cart_neighb(ludwig->cs,BACKWARD,dim));
-    // }
-    //double uu[3];
-    
-    // hydro_u_halo(ludwig->hydro);
-    // ludwig->tr->cs = ludwig->cs;
-    // int index = cs_index(ludwig->tr->cs,2,17,1);
-    // hydro_u(ludwig->hydro, index, uu);
-    // for(int dim = X; dim < 3; dim++){
-    // printf("\nrank = %d, dim = %d, uu = %e\n", cs_cart_rank(ludwig->cs),
-    //                         dim,uu[dim]);
-    // }
     MPI_Barrier(comm);
     //
     /* Next time step */
   }
-  tracer_close_file(ludwig->tr);
+  // tracer_close_file(ludwig->tr);
 
   /* End of time step loop. A barrier, before closing down. */
   MPI_Barrier(comm);
