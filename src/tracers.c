@@ -1,50 +1,624 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include<stddef.h>
 #include <math.h> 
 #include <string.h> 
-// #include <mpi.h>
 #include "tracers.h"
-#include "ran.h"
-#include "runtime.h"
 
-
-
+// MPI_Datatype MPI_TRAC_TYPE;
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////
 
-// other sub functions
+// tracers main function
 
 //////////////////////////////////////////////////////////////////
 
 /*****************************************************************************
- * added by jain
- * tracer_pos_rank
+ * 
+ * tracers_main 
  *
- *returns the rank where global position of tracer
+ * 
+ *****************************************************************************/
+__host__ int tracers_main( cs_t *cs, hydro_t *hydro, trs_info *tinfo){
+
+  // collect halo
+  hydro_u_halo(hydro);
+
+  // update the position and get the new velocity
+  tracer_position_update(cs, hydro, tinfo);
+
+  //handle communication
+  tracer_particle_exchange(cs, tinfo);
+
+  //find current velocity
+  tracer_vel_update(cs, hydro, tinfo);
+  /*int nlocal_tracers = tinfo->ntracers_local, ncount;
+  trac *tr_arry = tinfo->tr_array; 
+    
+  for(ncount =0; ncount < nlocal_tracers; ncount++ ){
+    tracer_periodic_local_pos_update(cs, tr_arry[ncount].local_pos);
+    tracer_pos_grids(&tr_arry[ncount]);
+    tracer_grid_velocities(cs, hydro, &tr_arry[ncount]);
+    bilinear_interp_velocity(&tr_arry[ncount]);
+  }*/
+ free(hydro);
+
+  return 0;
+}
+
+/*****************************************************************************
+ * 
+ * tracers_position_update
+ *
+ * 
+ *****************************************************************************/
+
+ __host__  int tracer_position_update(cs_t *cs, hydro_t *hydro, trs_info *tinfo){
+
+  int nlocal_tracers = tinfo->ntracers_local;
+  trac *tr_arry = tinfo->tr_array; 
+  int nlocal[3];
+  cs_nlocal(cs, nlocal);
+    
+  for(int nt =0; nt < nlocal_tracers; nt++ ){
+    // tracer_pos_euler_integ(cs, &tr_arry[ncount]);
+    for(int dim = 0; dim<NHDIM; dim++){
+      tr_arry[nt].actual_pos[dim] += tr_arry[nt].tracer_u[dim];
+      tr_arry[nt].local_pos[dim] += tr_arry[nt].tracer_u[dim];
+      tr_arry[nt].rel_local_coords[dim] = (tr_arry[nt].local_pos[dim] >= nlocal[dim]) - (tr_arry[nt].local_pos[dim] < 0);
+    }
+  }
+
+  return 0;
+ }
+
+ /*****************************************************************************
+ * 
+ * tracers_euler_integ
+ *
+ * 
+ *****************************************************************************/
+/*__host__  void tracer_pos_euler_integ(cs_t * cs,  trac * tr){
+  
+  int nlocal[3];
+  cs_nlocal(cs, nlocal);
+
+  //if the particle was in a different rank in the previous timestep
+
+  for(int dim =X; dim <NHDIM; dim++ ){
+    tr->actual_pos[dim] += tr->tracer_u[dim];
+    tr->local_pos[dim]  += tr->tracer_u[dim];
+    tr->rel_local_coords[dim] = ((tr->local_pos[dim] >= nlocal[dim]) - (tr->local_pos[dim] < 0));
+  }
+
+  return ;
+  
+}*/
+
+ /*****************************************************************************
+ * 
+ * tracers_euler_integ
+ *
+ * 
+ *****************************************************************************/
+__host__ int tracer_vel_update(cs_t *cs, hydro_t *hydro, trs_info *tinfo){
+
+  int nlocal_tracers = tinfo->ntracers_local, ncount;
+  trac *tr_arry = tinfo->tr_array; 
+    
+  for(ncount =0; ncount < nlocal_tracers; ncount++ ){
+    tracer_periodic_local_pos_update(cs, tr_arry[ncount].local_pos);
+    tracer_pos_grids(&tr_arry[ncount]);
+    tracer_grid_velocities(cs, hydro, &tr_arry[ncount]);
+    bilinear_interp_velocity(&tr_arry[ncount]);
+  }
+
+  return 0;
+
+}
+
+/******************************************************************************************************
+ * added by jain
+ * tracer_pos_grids
+ *
+ * gets the immediate grid points around the global position of tracer.
+ *         3* * * * * * *2 
+ *         *             *          3(0,1)= floor(x),floor(y) + 1   2(1,1)= floor(x) + 1,floor(y) + 1          
+ *         *     ##      * ## = x,y
+ *         *             *             
+ *         0* * * * * * *1          0(0,0)= floor(x),floor(y)       1(1,0)= floor(x) + 1,floor(y)
+ *********************************************************************************************************/
+
+__host__ void tracer_pos_grids( trac * tr) {
+  // find immediate grid neighbours
+  for (XYcorner corner=XY00; corner<GRID_NEIGHBOUR_COUNT; corner++){
+    tr->local_grid_arr[corner][X] = ((corner == XY00 || corner == XY01)) ? 
+                                  (int)floor(tr->local_pos[X]) : (int)floor(tr->local_pos[X]) + 1;
+    tr->local_grid_arr[corner][Y] = ((corner == XY00 || corner == XY10)) ? 
+                                  (int)floor(tr->local_pos[Y]) : (int)floor(tr->local_pos[Y]) + 1;
+    tr->local_grid_arr[corner][Z]  = (int)floor(tr->local_pos[Z]);      
+  }    
+  return;
+}
+
+/*****************************************************************************
+ * added by jain
+ * tracer_grid_velocities
+ *
+ * makes sure global positions always stays inside the simulation box
  *
  *****************************************************************************/
 
-__host__  int tracer_pos_rank(cs_t * cs, double domain_pos[3]){
+__host__  void tracer_grid_velocities(cs_t *cs, hydro_t *hydro, trac *tr){
+    
+  for (XYcorner corner = XY00; corner < GRID_NEIGHBOUR_COUNT; corner++){
+    get_velocity_at_grid(cs, hydro, tr->local_grid_arr[corner], tr->tracer_u_arr[corner]);
+  } 
+  return;        
+}
 
-  assert(cs);
-  int nlocal[3], coords[3];
-  int rank;
-  
-  cs_nlocal(cs, nlocal);
-  MPI_Comm trac_comm;
-  
-  cs_cart_comm(cs, &trac_comm);
+/*****************************************************************************
+ * 
+ * bilinear_interp_velocity
+ *
+ * get tracer velocity - interpolated from the immediate grid point velocities
+ *
+ *****************************************************************************/
 
-  for(int dim=X; dim<3; dim++){
-    coords[dim] = (int)(domain_pos[dim]/nlocal[dim]);
+__host__  void bilinear_interp_velocity(trac *tr) {
+
+  double tx, ty;
+  double v_y0[3], v_y1[3];
+
+  tx = (tr->local_pos[X] -  tr->local_grid_arr[XY00][X]) / 
+                                          (tr->local_grid_arr[XY10][X] - tr->local_grid_arr[XY00][X]);
+  ty = (tr->local_pos[Y] -  tr->local_grid_arr[XY00][Y]) / 
+                                          (tr->local_grid_arr[XY01][Y] - tr->local_grid_arr[XY00][Y]);
+
+  /* Interpolate along x */
+  v_y0[Z] = tr->tracer_u_arr[XY00][Z];
+  v_y1[Z] = tr->tracer_u_arr[XY00][Z];
+  for (int i = 0; i < 2; i++) {
+    v_y0[i] = (1 - tx) * tr->tracer_u_arr[XY00][i] + tx * tr->tracer_u_arr[XY10][i];
+    v_y1[i] = (1 - tx) * tr->tracer_u_arr[XY01][i] + tx * tr->tracer_u_arr[XY11][i];
   }
 
-  MPI_Cart_rank(trac_comm, coords, &rank);
-  return rank;
+  /* Interpolate along y */
+  for (int i = 0; i < 2; i++) {
+    tr->tracer_u[i] = (1 - ty) * v_y0[i] + ty * v_y1[i];
+  }
+  tr->tracer_u[Z] = tr->tracer_u_arr[XY00][Z];
+
+  return ;
 }
 
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////
+
+// tracer main communication
+
+//////////////////////////////////////////////////////////////////
 
 
+/*****************************************************************************
+ * 
+ * tracer_particle_exchange
+ *
+ * 
+ *****************************************************************************/
+
+__host__ int tracer_particle_exchange(cs_t *cs, trs_info * tinfo){
+  
+  // int nlocal_tracers = tinfo->ntracers_local;
+  int countSend[3][3][3] = {{{0}}}, countRecv[3][3][3] = {{{0}}};
+
+  //send the count of particles leaving and recevi the count entering the rank
+  //(1,1,1) will have total incoming and outgoing particles for countSend and count Recv respectively.
+
+  tracer_send_recv_count(cs, tinfo, countSend, countRecv);
+
+  //prepare the buffer for sending and receving
+  //an array of 3*3*3 shape pointer pointing to an array of shape 3
+  trac *buffSend[3][3][3], *buffRecv[3][3][3];
+  memset(buffSend, 0, sizeof(buffSend));
+  memset(buffRecv, 0, sizeof(buffRecv));
+
+  //allocate the space for send and receive buffer
+  tracer_allocate_buffer(cs, buffSend, buffRecv, countSend, countRecv);
+  
+  //extend the trac array if needed
+  tracer_update_trac_array_capacity(cs, tinfo, countSend[1][1][1], countRecv[1][1][1]);
+  
+  //prepare the send buffer and reorder the tr_array
+  tracer_pack_buffer(cs, tinfo, buffSend);
+
+  //send and receive the buffer
+  tracer_send_recv_particles(cs, tinfo, buffSend, buffRecv, countSend, countRecv, MPI_TRAC_TYPE);
+
+  // unwrap the incomin buffer
+  tracer_unpack_recv_buffer(cs, tinfo, buffRecv, countRecv);
+  /*int recv_size =0;
+  trac *temp_arr = malloc(countRecv[1][1][1]*sizeof(trac));
+   for(int dx = -1; dx<=1; dx++){
+    for(int dy = -1; dy<=1; dy++){
+      for(int dz = -1; dz<=1; dz++){
+
+        if(dx ==0 && dy ==0 && dz ==0) continue;
+        int i = dx+1; int j = dy +1; int k = dz +1;
+        memcpy(&temp_arr[recv_size], buffRecv[i][j][k],countRecv[i][j][k] * sizeof(trac));
+        
+        recv_size+=countRecv[i][j][k]; 
+      }
+    }
+  }
+
+  if (recv_size != countRecv[1][1][1]){
+    pe_fatal(cs->pe, "no of recvied particle = %d , mismatched with the count of total particles expected = %d",
+    recv_size, countRecv[1][1][1]);
+  }
+
+  memcpy(&tinfo->tr_array[tinfo->ntracers_local], temp_arr, recv_size*sizeof(trac));
+  tinfo->ntracers_local += recv_size;
+  free(temp_arr);*/
+
+  //free the buffer
+
+  for(int dx = -1; dx<=1; dx++){
+    for(int dy = -1; dy<=1; dy++){
+      for(int dz = -1; dz<=1; dz++){
+
+        free(buffSend[dx+1][dy+1][dz+1]);
+        free(buffRecv[dx+1][dy+1][dz+1]);
+      }
+    }
+  }
+  
+  return 0;
+
+}
+
+
+/*****************************************************************************
+ * 
+ * tracer_send_check
+ *
+ * 
+ ****************************************************************************
+
+__host__ int tracer_particle_exchange(cs_t *cs, trs_info * tinfo){
+  
+  int nlocal_tracers = tinfo->ntracers_local;
+  trac *tr_arry = tinfo->tr_array;
+
+  int countSend[2][3] ={0}, countRecv[2][3] = {0};
+
+  //send the count of particles leaving and recevi the count entering the rank
+  tracer_send_recv_count(cs, &tr_arry, nlocal_tracers, countSend, countRecv);
+
+  //prepare the buffer for sending and receving
+  //an array of 2*3 shape pointer pointing to an array of shape 3
+  double ( *buffSend[2][3])[3], ( *buffRecv [2][3])[3];
+
+  // allocate memory for buffer
+  for (int dim = X; dim <NHDIM; dim++){
+
+    buffSend[FORWARD][dim] = calloc(countSend[FORWARD][dim], sizeof(*buffSend[FORWARD][dim]));
+    buffSend[BACKWARD][dim] = calloc(countSend[BACKWARD][dim], sizeof(*buffSend[BACKWARD][dim]));
+    
+    buffRecv[FORWARD][dim] = calloc(countRecv[FORWARD][dim], sizeof(*buffRecv[FORWARD][dim]));
+    buffRecv[BACKWARD][dim] = calloc(countRecv[BACKWARD][dim], sizeof(*buffRecv[BACKWARD][dim]));
+  }
+
+  //prepare the send buffer and reorder the tr_array, also check if it has space for the incoming particle
+
+  //send and receive the buffer
+
+  // unwrap the incomin buffer
+
+  //free the buffer
+
+  
+  return 0;
+
+}*/
+
+/*****************************************************************************
+ * 
+ * tracer_send_recv_count
+ * written assuming tracer doesn't move to the neighbouring diagonal rank 
+ * 
+ *****************************************************************************
+
+__host__ int tracer_send_recv_count(cs_t *cs, trac *tr_arry, 
+          int nlocal_tracers, int countSend[2][3], int countRecv[2][3]){
+
+  // count the particles leaving through each faces.
+  for(int ncount = 0; ncount < nlocal_tracers; ncount++){
+
+    int *rcoords = tr_arry[ncount].rel_local_coords;
+    if (!rcoords[X] && !rcoords[Y] && !rcoords[Z]) continue;
+
+    for (int dim = 0; dim < NHDIM; dim++){
+      if (rcoords[dim] == 0) continue;
+      if (rcoords > 0) countSend[FORWARD][dim]++;
+      else countSend[BACKWARD][dim]++;
+
+      break;// assumes particle only moves throough the faces.
+    }
+  }
+
+  // send the outgoing particle count and receving the incoming particle count
+  int tagForBac = MPI_TAG_TRAC_FOR_BAC_COUNT, tagBacFor = MPI_TAG_TRAC_BAC_FOR_COUNT;
+
+  for (int dim = 0; dim < NHDIM; dim++){
+
+    MPI_Sendrecv(&countSend[FORWARD][dim], 1, MPI_INT, cs->mpi_cart_neighbours[FORWARD][dim], tagForBac + dim,
+    &countRecv[BACKWARD][dim], 1, MPI_INT, cs->mpi_cart_neighbours[BACKWARD][dim], tagBacFor + dim,
+    cs->commcart, MPI_STATUS_IGNORE);
+    
+    MPI_Sendrecv(&countSend[BACKWARD][dim], 1, MPI_INT, cs->mpi_cart_neighbours[BACKWARD][dim], tagBacFor + dim,
+    &countRecv[FORWARD][dim], 1, MPI_INT, cs->mpi_cart_neighbours[FORWARD][dim],tagForBac + dim,
+    cs->commcart, MPI_STATUS_IGNORE);
+  }
+
+  return 0;
+}
+*/
+
+/*****************************************************************************
+ * 
+ * tracer_send_recv_count
+ * handles particle exchange in all 26 directions 
+ * 
+ *****************************************************************************/
+
+__host__ int tracer_send_recv_count(cs_t *cs, trs_info *tinfo, 
+                         int countSend[3][3][3], int countRecv[3][3][3]){
+            
+  int nlocal_tracers = tinfo->ntracers_local;            
+  // count the particles leaving through each faces.
+  for(int ncount = 0; ncount < nlocal_tracers; ncount++){
+    int *dxyz = tinfo->tr_array[ncount].rel_local_coords;
+    //counts for everyone expcept 0,0,0 which means it didnt go past the local domain
+    if (dxyz[X] || dxyz[Y] || dxyz[Z]){
+      countSend[dxyz[X] + 1][dxyz[Y] + 1][dxyz[Z] + 1]++;
+      countSend[1][1][1]++;// record the total sending count
+    }
+    
+  }
+
+  int dxo, dyo, dzo, tag;
+  for(int dx = -1; dx <= 1; dx++){
+    for(int dy = -1; dy <= 1; dy++){
+      for(int dz = -1; dz <= 1; dz++){
+
+        if (dx == 0 && dy == 0 && dz == 0) continue;// skip sending for (1,1,1) which is the own rank
+       
+        dxo = -dx; dyo = -dy; dzo = -dz;
+        tag = MPI_TAG_TRAC_COUNT + ((dz + 1) + (dy + 1) *3 + (dx + 1)*3*3);
+
+        int send_rank = tinfo->tr_nbr[dx+1][dy+1][dz+1];
+        int recv_rank = tinfo->tr_nbr[dxo+1][dyo+1][dzo+1];
+
+        if(send_rank == MPI_PROC_NULL && recv_rank == MPI_PROC_NULL) continue;
+        if(recv_rank == MPI_PROC_NULL) countRecv[dxo+1][dyo+1][dzo+1] = 0;
+
+
+        MPI_Sendrecv(&countSend[dx+1][dy+1][dz+1], 1, MPI_INT, send_rank, tag,
+                    &countRecv[dxo+1][dyo+1][dzo+1], 1, MPI_INT, recv_rank, tag,
+                     cs->commcart, MPI_STATUS_IGNORE);
+      }
+    }
+  }
+
+// compute total incoming particles after accumulation
+countRecv[1][1][1] = 0;
+for(int dx=0; dx<3; dx++){
+  for(int dy=0; dy<3; dy++){
+    for(int dz=0; dz<3; dz++){
+      if(dx!=1 || dy!=1 || dz!=1){
+        countRecv[1][1][1] += countRecv[dx][dy][dz];
+      }
+    }
+  }
+}
+
+
+  return 0;
+}
+
+/*****************************************************************************
+ * 
+ * tracer_allocate_buffer
+ * allocate memory for send and recieve buffer based on the count of incoming and oitgoing particles
+ * 
+ *****************************************************************************/
+
+__host__ int tracer_allocate_buffer(cs_t *cs, trac *buffSend[3][3][3], 
+            trac *buffRecv[3][3][3], int countSend[3][3][3], int countRecv[3][3][3]){
+
+  // allocate memory for buffer
+  //send buffer
+  for(int dx = -1; dx <= 1; dx++){
+    for(int dy = -1; dy <= 1; dy++){
+      for(int dz = -1; dz <= 1; dz++){
+
+        int nsend = countSend[dx+1][dy+1][dz+1]; 
+        if (nsend <= 0 || (dx == 0 && dy == 0 && dz == 0)) continue;//skips(1,1,1)
+        buffSend[dx+1][dy+1][dz+1] = malloc(nsend*sizeof(trac));
+
+        if(!buffSend[dx+1][dy+1][dz+1]) pe_fatal(cs->pe, "Send buffer allocation failed for buffSend[%d][%d][%d]"
+          , dx+1, dy+1, dz+1);
+
+      }
+    }
+  }
+
+  //Recv buffer
+  for(int dx = -1; dx <= 1; dx++){
+    for(int dy = -1; dy <= 1; dy++){
+      for(int dz = -1; dz <= 1; dz++){
+
+        int nrecv = countRecv[dx+1][dy+1][dz+1]; //skips(1,1,1)
+        if (nrecv <= 0 || (dx == 0 && dy == 0 && dz == 0)) continue;
+        buffRecv[dx+1][dy+1][dz+1] = malloc(nrecv*sizeof(trac));
+
+        if(!buffRecv[dx+1][dy+1][dz+1]) pe_fatal(cs->pe, "Receive buffer allocation failed for buffRecv[%d][%d][%d]"
+          , dx+1, dy+1, dz+1);
+        
+      }
+    }
+  }
+return 0;
+}
+
+/*****************************************************************************
+ * 
+ * tracer_update_buffer_capacity
+ *
+ * 
+ *****************************************************************************/
+__host__ int tracer_update_trac_array_capacity(cs_t * cs, trs_info * tinfo, 
+                    int countTotalSend, int countTotalRecv){
+
+  int free_space = tinfo->ntracer_capacity - (tinfo->ntracers_local - countTotalSend);
+  
+  if(free_space < countTotalRecv){
+
+    int req_space = countTotalRecv - free_space;
+    int new_capacity = tinfo->ntracer_capacity + req_space;
+    trac *new_arry = realloc(tinfo->tr_array, new_capacity * sizeof(trac));
+
+    if(!new_arry){
+      pe_fatal(cs->pe, "Failed intialization of %d capacity to tracer array", new_capacity);
+    }
+    memset(&new_arry[tinfo->ntracer_capacity], 0, req_space * sizeof(trac));
+
+    tinfo->tr_array = new_arry;
+    tinfo->ntracer_capacity = new_capacity;
+
+  }
+
+  return 0;  
+}
+
+/*****************************************************************************
+ * 
+ * tracer_pack_buffer
+ *
+ * 
+ *****************************************************************************/
+__host__ int tracer_pack_buffer(cs_t *cs, trs_info *tinfo, trac *buffSend[3][3][3]){
+
+  int sendBuff_idx[3][3][3] = {0};
+  int nlocal_tracers = tinfo->ntracers_local;
+  trac *temp_arry = malloc(nlocal_tracers*sizeof(trac));
+  int new_local_count = 0;
+
+  for(int count = 0; count< nlocal_tracers; count++){
+    int *dxyz = tinfo->tr_array[count].rel_local_coords;
+
+    if(dxyz[X] || dxyz[Y] || dxyz[Z]){
+      int i = dxyz[X] + 1, j = dxyz[Y] + 1, k = dxyz[Z] + 1;
+      int idx = sendBuff_idx[i][j][k];
+
+      buffSend[i][j][k][idx] = tinfo->tr_array[count];
+      sendBuff_idx[i][j][k]++;
+
+    }else{
+
+      temp_arry[new_local_count] = tinfo->tr_array[count];
+      new_local_count++;
+    }
+  }
+
+  memcpy(tinfo->tr_array, temp_arry, new_local_count*sizeof(trac));
+  tinfo->ntracers_local = new_local_count;//local count after sending
+  free(temp_arry);
+
+  return 0;
+
+}
+
+
+/*****************************************************************************
+ * 
+ * tracer_send_recv_particles
+ *
+ * 
+ *****************************************************************************/
+__host__ int tracer_send_recv_particles(cs_t * cs, trs_info * tinfo, trac * buffSend[3][3][3], trac * buffRecv[3][3][3],
+                int countSend[3][3][3], int countRecv[3][3][3], MPI_Datatype MPI_TRAC_TYPE){
+
+  //send and receive the buffer
+  MPI_Request reqs[26 * 2];
+  int req_idx =0;
+  for(int dx = -1; dx<=1; dx++){
+    for(int dy = -1; dy<=1; dy++){
+      for(int dz = -1; dz<=1; dz++){
+
+        if (dx == 0 && dy ==0 && dz ==0)continue;
+        int i = dx +1; int j = dy + 1; int k = dz +1;
+        int tag = MPI_TAG_TRAC_COMM_BUF + (dz+1) + (dy+1)*3 + (dx+1)*3*3;// unique tag for all 26 directions
+        int send_rank = tinfo->tr_nbr[i][j][k];
+        int recv_rank = tinfo->tr_nbr[-dx+1][-dy+1][-dz+1];
+
+        if (send_rank != MPI_PROC_NULL){
+            MPI_Isend(buffSend[i][j][k],countSend[i][j][k], MPI_TRAC_TYPE, send_rank, tag, cs->commcart, &reqs[req_idx++]);
+        }
+
+        if(recv_rank != MPI_PROC_NULL){
+          //2 - i = 2 -(dx +1) = -dx + 1
+          MPI_Irecv(buffRecv[2-i][2-j][2-k], countRecv[2-i][2-j][2-k], MPI_TRAC_TYPE, recv_rank, tag, cs->commcart, &reqs[req_idx++]);
+        }
+
+      }
+    }
+  }
+
+  MPI_Waitall(req_idx, reqs, MPI_STATUSES_IGNORE);
+
+  return 0;
+}
+
+/*****************************************************************************
+ * 
+ * tracer_copy_recv_buffer
+ *
+ * 
+ *****************************************************************************/
+__host__ int tracer_unpack_recv_buffer(cs_t *cs, trs_info * tinfo, trac *buffRecv[3][3][3], int countRecv[3][3][3]){
+
+  int recv_size =0;
+  trac *temp_arr = malloc(countRecv[1][1][1]*sizeof(trac));
+   for(int dx = -1; dx<=1; dx++){
+    for(int dy = -1; dy<=1; dy++){
+      for(int dz = -1; dz<=1; dz++){
+
+        if(dx ==0 && dy ==0 && dz ==0) continue;
+        int i = dx+1; int j = dy +1; int k = dz +1;
+        memcpy(&temp_arr[recv_size], buffRecv[i][j][k],countRecv[i][j][k] * sizeof(trac));
+        
+        recv_size+=countRecv[i][j][k]; 
+      }
+    }
+  }
+
+  if (recv_size != countRecv[1][1][1]){
+    pe_fatal(cs->pe, "no of recvied particle = %d , mismatched with the count of total particles expected = %d",
+    recv_size, countRecv[1][1][1]);
+  }
+
+  memcpy(&tinfo->tr_array[tinfo->ntracers_local], temp_arr, recv_size*sizeof(trac));
+  tinfo->ntracers_local += recv_size;
+  free(temp_arr);
+
+  return 0;
+
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////
 
 // tracer structs creater and initialize
@@ -59,60 +633,63 @@ __host__  int tracer_pos_rank(cs_t * cs, double domain_pos[3]){
  *****************************************************************************/
 __host__ int tracers_create(cs_t *cs,  pe_t *pe, rt_t *rt, trs_info **trsinfo){
 
-    // make trs_info struct
-    trs_info *tinfo;    
-    tinfo = (trs_info *) calloc(1,sizeof(trs_info));
-    //  printf("passed by rank %d", rank);
-    tracers_parse_input(rt, tinfo);
+  // make trs_info struct
+  trs_info *tinfo;    
+  tinfo = (trs_info *) calloc(1,sizeof(trs_info));
+  tracers_parse_input(rt, tinfo);
+  set_tr_nbr(cs, tinfo);
 
-    //make an array of initial positions for tracers
-    double (*initial_domain_pos)[3];
-    initial_domain_pos = calloc(tinfo->Ntracers, sizeof(*initial_domain_pos));
+  //make an array of initial positions for tracers
+  double (*initial_domain_pos)[3];
+  initial_domain_pos = calloc(tinfo->Ntracers, sizeof(*initial_domain_pos));
+
+  // generate random positions
+  tracers_random_pos(tinfo, pe, cs, initial_domain_pos);
+
+  int working_rank = cs_cart_rank(cs);
+  int tracer_rank;
+  int nlocal_tracer_count = 0;
+
+  // find the total no of tracers local to a rank
+  for(int nt=0; nt < tinfo->Ntracers; nt++){                
+    tracer_rank = tracer_pos_rank(cs, initial_domain_pos[nt]);
+    if (working_rank != tracer_rank) continue;
+    nlocal_tracer_count++;//count the no of tracers local to a rank
+  }
   
-    // generate random positions
-    tracers_random_pos(tinfo, pe, cs, initial_domain_pos);
+  tinfo->ntracers_local = nlocal_tracer_count;
+  tinfo->ntracer_capacity = tinfo->ntracers_local + tinfo->Ntracers/5;
+  
+  // allocate memory for the tracer struct
+  trac *tr;    
+  tr = (trac *) calloc(tinfo->ntracer_capacity, sizeof(trac));
 
-    int working_rank = cs_cart_rank(cs);
-    int tracer_rank;
-    int nlocal_tracer_count = 0;
+  //define an mpi struct data type for tracer struct(for communication)
 
-    // find the total no of tracers local to a rank
-    for(int nt=0; nt < tinfo->Ntracers; nt++){                
-      tracer_rank = tracer_pos_rank(cs, initial_domain_pos[nt]);
-      if (working_rank != tracer_rank) continue;
-      nlocal_tracer_count++;//count the no of tracers local to a rank
+  create_mpi_trac_datatype(&MPI_TRAC_TYPE);
+
+  // initialize/ build the tracers for each rank
+  int noffset[3];
+  cs_nlocal_offset(cs, noffset);
+  tinfo->tr_array = tr;
+
+  nlocal_tracer_count =0; //again set to zero
+  for(int i=0; i<tinfo->Ntracers; i++){      
+    tracer_rank = tracer_pos_rank(cs, initial_domain_pos[i]);
+    if (tracer_rank != working_rank) continue;
+
+    for(int dim=X; dim<NHDIM; dim++){
+      tr[nlocal_tracer_count].intial_pos[dim] = initial_domain_pos[i][dim];
+      tr[nlocal_tracer_count].actual_pos[dim] = initial_domain_pos[i][dim];
+      tr[nlocal_tracer_count].local_pos[dim] = (initial_domain_pos[i][dim] - noffset[dim]);
     }
-    
-    tinfo->ntracers_local = nlocal_tracer_count;
-    int extra_mem = nlocal_tracer_count;
-    
-    // allocate memory for the tracer struct
-    trac *tr;    
-    tr = (trac *) calloc(tinfo->ntracers_local + extra_mem,sizeof(trac));
-
-    // initialize/ build the tracers for each rank
-    int noffset[3];
-    cs_nlocal_offset(cs, noffset);
-    tinfo->tr_array = tr;
-
-    nlocal_tracer_count =0;
-    for(int i=0; i<tinfo->Ntracers; i++){      
-      tracer_rank = tracer_pos_rank(cs, initial_domain_pos[i]);
-      if (tracer_rank != working_rank) continue;
-
-      for(int dim=X; dim<NHDIM; dim++){
-        tr[nlocal_tracer_count].intial_pos[dim] = initial_domain_pos[i][dim];
-        tr[nlocal_tracer_count].actual_pos[dim] = initial_domain_pos[i][dim];
-        tr[nlocal_tracer_count].tracer_u[dim] = 0.0;
-        tr[nlocal_tracer_count].rel_local_coords[dim] = 0;
-        tr[nlocal_tracer_count].local_pos[dim] = (int)(initial_domain_pos[i][dim] - noffset[dim]);
-      }
-      tr[nlocal_tracer_count].tracer_id = i+1;
-      nlocal_tracer_count++;
-    }
-    *trsinfo = tinfo;
-    free(initial_domain_pos);
-    return 0;
+    tr[nlocal_tracer_count].tracer_id = i+1;
+    nlocal_tracer_count++;
+  }
+  //passed the created struct to the global scope
+  *trsinfo = tinfo;
+  free(initial_domain_pos);
+  return 0;
 }
 
 /*****************************************************************************
@@ -138,18 +715,18 @@ __host__ void tracers_parse_input(rt_t *rt, trs_info *tinfo){
  *****************************************************************************/
 __host__ void tracers_random_pos(trs_info *tinfo, pe_t *pe, cs_t *cs, double (*initial_domain_pos)[3]){
 
-  int dh = 0.5;// initiate tracers at least 5 grid points from the boundary
-  int ntotal[3];
+  int dh = 0;// initiate tracers at least 5 grid points from the boundary
+  double ntotal[3];
   int rand_seed = tinfo->tracer_seed;// include time module to get time(NULL) to generate different random seed
   double l[3], lmin, lmax;
   ran_init_seed(pe, rand_seed);
 
   cs_lmin(cs, l);
-  cs_ntotal(cs, ntotal);
+  cs_ltot(cs, ntotal);
   for (int nt =0; nt < tinfo->Ntracers; nt++){
     for(int dim = 0; dim<2; dim++){
       lmin = l[dim] + dh;
-      lmax = l[dim] +  ntotal[dim] - dh;
+      lmax = ntotal[dim] - dh;
       assert(lmax >= lmin);
       initial_domain_pos[nt][dim] = lmin + (lmax - lmin)*ran_serial_uniform();
     }
@@ -157,3 +734,166 @@ __host__ void tracers_random_pos(trs_info *tinfo, pe_t *pe, cs_t *cs, double (*i
   }
 
 }
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////
+
+// other sub functions
+
+//////////////////////////////////////////////////////////////////
+
+/*****************************************************************************
+ * added by jain
+ * tracer_pos_rank
+ *
+ *returns the rank where global position of tracer
+ *
+ *****************************************************************************/
+
+__host__  int tracer_pos_rank(cs_t * cs, double domain_pos[3]){
+
+  assert(cs);
+  int nlocal[3], coords[3];
+  int rank;
+  int noffset[3];
+  
+  cs_nlocal(cs, nlocal);
+  MPI_Comm trac_comm;
+  
+  cs_cart_comm(cs, &trac_comm);
+
+  cs_nlocal_offset(cs, noffset);
+  for(int dim=X; dim<3; dim++){
+    if ((domain_pos[dim] - noffset[dim] <= 0.0) || (domain_pos[dim] > (noffset[dim] + nlocal[dim])) ) return -1;
+    coords[dim] = (int)floor(domain_pos[dim]/nlocal[dim]);
+  }
+
+  MPI_Cart_rank(trac_comm, coords, &rank);
+  return rank;
+}
+
+/*****************************************************************************
+ * added by jain
+ * get_velocity_at_grid
+ *
+ * fetches the lattice velocity corresponding to a grid posint
+ *****************************************************************************/
+__host__  void get_velocity_at_grid(cs_t *cs, hydro_t *hydro, int local_grid_pos[3], double tracer_u_grid[3]) {
+
+  // if (local_grid_pos[X] < 1 - cs->param->nhalo){pe_info(cs->pe, "local_grid_pos X = %d", local_grid_pos[X]);}
+
+    int index = cs_index(cs, local_grid_pos[X], local_grid_pos[Y], local_grid_pos[Z]);
+    hydro_u(hydro, index, tracer_u_grid);
+
+}
+
+/*****************************************************************************
+ * added by jain
+ * tracer_periodic_pos_update
+ *
+ * makes sure local positions always stays inside the rank
+ * if the particle was in a different rank in the previous timestep
+ *
+ *****************************************************************************/
+__host__  int tracer_periodic_local_pos_update(cs_t * cs, double local_pos[3]){
+  int nlocal[3];
+  cs_nlocal(cs, nlocal);
+  for (int dim = X; dim < NHDIM; dim++){
+    local_pos[dim] = fmod( local_pos[dim],nlocal[dim]) + nlocal[dim] * (local_pos[dim] < 0) ;
+  }
+   return 0;
+}
+
+/*****************************************************************************
+ * added by jain
+ * set_tr_nbr
+ *
+ * finds all the neighbours of a rank
+ *****************************************************************************/
+
+  __host__ int set_tr_nbr(cs_t *cs, trs_info * tinfo){
+
+    int own_rank = cs_cart_rank(cs);
+    int coords[3], size[3], periodic[3];
+    int nbr_coords[3];
+
+    cs_cart_coords(cs, coords);
+    cs_cartsz(cs,size);
+    cs_periodic(cs, periodic);
+
+    for(int i = -1; i<=1; i++){
+      for(int j = -1; j<=1; j++){
+        for(int k = -1; k<=1; k++){
+
+          // own rank goes to 1,1,1
+          if (i==0 && j==0 && k==0) {tinfo->tr_nbr[i+1][j+1][k+1] = own_rank; continue;}
+
+          // find the neibhouring ranks coordinates, wrap around if periodic else keep the values
+          nbr_coords[X] = (periodic[X] == 1) ? (coords[X] + i + size[X]) % size[X] : (coords[X] + i);
+          nbr_coords[Y] = (periodic[Y] == 1) ? (coords[Y] + j + size[Y]) % size[Y] : (coords[Y] + i);
+          nbr_coords[Z] = (periodic[Z] == 1) ? (coords[Z] + k + size[Z]) % size[Z] : (coords[Z] + i);
+          
+          // checks whether any direction breaks periodicity,and puts rank to null
+          if (nbr_coords[X] < 0 || nbr_coords[X] > size[X] - 1){tinfo->tr_nbr[i+1][j+1][k+1] = MPI_PROC_NULL; continue;}
+          if (nbr_coords[Y] < 0 || nbr_coords[Y] > size[Y] - 1){tinfo->tr_nbr[i+1][j+1][k+1] = MPI_PROC_NULL; continue;}
+          if (nbr_coords[Z] < 0 || nbr_coords[Z] > size[Z] - 1){tinfo->tr_nbr[i+1][j+1][k+1] = MPI_PROC_NULL; continue;}
+                                                          
+          MPI_Cart_rank(cs->commcart, nbr_coords, &tinfo->tr_nbr[i+1][j+1][k+1]);                         
+      }
+    }
+  }
+  return 0;
+}
+
+/*****************************************************************************
+ * added by jain
+ * create_mpi_trac_datatype
+ *
+ * initializes the mpi_data type for the tracer struct stricv\ctky for sending
+ *****************************************************************************/
+__host__ void create_mpi_trac_datatype(MPI_Datatype * MPI_TRAC_TYPE){
+
+  const int num_items = 5;
+  int blocks[5] = {1, 3, 3, 3, 3};
+  
+  MPI_Datatype types[5] = {MPI_INT, MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE};
+  MPI_Aint offsets[5];
+
+  offsets[0] = offsetof(trac, tracer_id);
+  offsets[1] = offsetof(trac, intial_pos);
+  offsets[2] = offsetof(trac, actual_pos);
+  offsets[3] = offsetof(trac, local_pos);
+  offsets[4] = offsetof(trac, tracer_u);
+
+  MPI_Type_create_struct(num_items, blocks, offsets, types, MPI_TRAC_TYPE);
+  MPI_Type_commit(MPI_TRAC_TYPE);
+  return;
+
+}
+
+/*****************************************************************************
+ * added by jain
+ *tracer_destruct
+ *
+ * initializes the mpi_data type for the tracer struct stricv\ctky for sending
+ * also removes tr_Array and tinfo srtuct
+ *****************************************************************************/
+
+__host__ void tracers_destruct(trs_info **tinfo, MPI_Datatype * MPI_TRAC_TYPE){
+
+  if(MPI_TRAC_TYPE && *MPI_TRAC_TYPE != MPI_DATATYPE_NULL){
+     MPI_Type_free(MPI_TRAC_TYPE);
+        *MPI_TRAC_TYPE = MPI_DATATYPE_NULL;
+  }
+
+  if (tinfo && *tinfo) {
+        if ((*tinfo)->tr_array) {
+            free((*tinfo)->tr_array);
+            (*tinfo)->tr_array = NULL;
+        }
+        free(*tinfo);
+        *tinfo = NULL;
+  }
+  return ;
+}
+

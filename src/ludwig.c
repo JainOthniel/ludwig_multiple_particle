@@ -125,6 +125,8 @@
 #include "ludwig.h"
 #include "tracers.h"
 
+MPI_Datatype MPI_TRAC_TYPE;
+// MPI_Datatype MPI_TRAC_TYPE;
 typedef struct ludwig_s ludwig_t;
 struct ludwig_s {
   pe_t * pe;                /* Parallel environment */
@@ -549,22 +551,24 @@ void ludwig_run(const char * inputfile) {
   int rank = cs_cart_rank(ludwig->cs);
   // printf("passed by rank %d", rank);
   tracers_create(ludwig->cs, ludwig->pe, ludwig->rt, &ludwig->tinfo);
-  int N = ludwig->tinfo->Ntracers;
+  // int N = ludwig->tinfo->Ntracers;
   // if (rank == 0){
   //   for(int n=0; n<N; n++){
   //     printf("n = %d, X = %f, Y = %f, Z = %f\n", n +1, ludwig->tinfo->tr_array[n].intial_pos[X],
   //           ludwig->tinfo->tr_array[n].intial_pos[Y], ludwig->tinfo->tr_array[n].intial_pos[Z]);
   //   }
   // }
-  for(int n=0; n<ludwig->tinfo->ntracers_local; n++){
-      printf("\nrank = %d, n = %d, X = %f, Y = %f, Z = %f\n", rank, ludwig->tinfo->tr_array[n].tracer_id, 
+  // printf("tracer_local = %d\n", ludwig->tinfo->ntracers_local);
+  /*for(int n=0; n<ludwig->tinfo->ntracers_local; n++){
+      printf("rank = %d, n = %d, X = %f, Y = %f, Z = %f\n", rank, ludwig->tinfo->tr_array[n].tracer_id, 
         ludwig->tinfo->tr_array[n].intial_pos[X],
             ludwig->tinfo->tr_array[n].intial_pos[Y], ludwig->tinfo->tr_array[n].intial_pos[Z]);
-    }
+    }*/
 
-  int total_trac;
+  /*int total_trac;
   MPI_Reduce(&ludwig->tinfo->ntracers_local,&total_trac, 1, MPI_INT, MPI_SUM, 0, comm);
-  if (rank == 0) printf("\ntotal_trac = %d\n", total_trac);
+  pe_info(ludwig->pe, "total_trac = %d\n", total_trac);*/
+
   // tracer_create(ludwig->cs, &ludwig->tr);
   // tracer_init(ludwig->tr, ludwig->cs, pos);
   // tracer_init_file(ludwig->cs, ludwig->tr);
@@ -576,7 +580,7 @@ void ludwig_run(const char * inputfile) {
     TIMER_start(TIMER_STEPS);
     step = physics_control_timestep(ludwig->phys);
 
-    if (step <5000){
+    if (step >0){
 
     if (ludwig->hydro) {
       hydro_f_zero(ludwig->hydro, fzero);
@@ -1051,8 +1055,14 @@ void ludwig_run(const char * inputfile) {
     /*if (step == 5000){
        hydro_u_halo(ludwig->hydro); // collect halo for all ranks
     }*/
-    if (step > 5000 ){
-      
+
+    tracers_main(ludwig->cs, ludwig->hydro, ludwig->tinfo);
+    //if (step > 0 ){
+      // hydro_u_halo(ludwig->hydro); 
+      // tracers_main(ludwig->cs, ludwig->hydro, ludwig->tinfo);
+      // int total_trac;
+      // MPI_Reduce(&ludwig->tinfo->ntracers_local,&total_trac, 1, MPI_INT, MPI_SUM, 0, comm);
+      // pe_info(ludwig->pe, "total_trac = %d\n", total_trac);
     //  tracer_position_update(ludwig->cs, ludwig->hydro, ludwig->tr);
      /*if (cs_cart_rank(ludwig->cs) == ludwig->tr->rank_current_ts){
         printf("\n%d,%e,%e,%e,%e,%e,%e\n", step,
@@ -1061,7 +1071,7 @@ void ludwig_run(const char * inputfile) {
         
      }*/
     //  tracer_write_file(ludwig->cs, ludwig->tr, step);
-    }
+    //}
     MPI_Barrier(comm);
     //
     /* Next time step */
@@ -1089,6 +1099,9 @@ void ludwig_run(const char * inputfile) {
 
   bbl_free(ludwig->bbl);
   colloids_info_free(ludwig->collinfo);
+
+  //tracer destruct
+  tracers_destruct(&ludwig->tinfo, &MPI_TRAC_TYPE);
 
   if (ludwig->inflow) ludwig->inflow->func->free(ludwig->inflow);
   if (ludwig->outflow) ludwig->outflow->func->free(ludwig->outflow);
