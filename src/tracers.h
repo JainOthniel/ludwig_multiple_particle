@@ -26,15 +26,13 @@ typedef struct tracer{
     // int rank_current_ts; /* current rank of the position of the tracer*/
     // int rank_previous_ts;
     int tracer_id;
-
     double intial_pos[3];
-    // trac_d * tr_d;
     double actual_pos[3];
     double local_pos[3];
-    int local_grid_arr[GRID_NEIGHBOUR_COUNT][3];
-    int rel_local_coords[3];
-
     double tracer_u[3];
+
+    int rel_local_coords[3];
+    int local_grid_arr[GRID_NEIGHBOUR_COUNT][3];
     double tracer_u_arr[GRID_NEIGHBOUR_COUNT][3];
 
     MPI_File tr_file;
@@ -62,17 +60,17 @@ typedef struct  tracers_info{
 
 extern MPI_Datatype MPI_TRAC_TYPE;
 
-__host__ void create_mpi_trac_datatype(MPI_Datatype * MPI_TRAC_TYPE);
-__host__ void tracers_destruct(trs_info **tinfo, MPI_Datatype * MPI_TRAC_TYPE);
+__host__ int create_mpi_trac_datatype(MPI_Datatype * MPI_TRAC_TYPE);
+__host__ int tracers_destruct(trs_info **tinfo, MPI_Datatype * MPI_TRAC_TYPE);
 
 
 // sub functions
 __host__  int tracer_pos_rank(cs_t * cs, double domain_pos[3]);
-__host__ void tracers_parse_input(rt_t *rt, trs_info *tinfo);
-__host__ void tracers_random_pos(trs_info *tinfo, pe_t *pe, cs_t *cs, double (*initial_domain_pos)[3]);
-__host__  void get_velocity_at_grid(cs_t *cs, hydro_t *hydro, int local_grid_pos[3], double tracer_u_grid[3]);
+__host__ int tracers_parse_input(rt_t *rt, trs_info *tinfo);
+__host__ int tracers_random_pos(trs_info *tinfo, pe_t *pe, cs_t *cs, double (*initial_domain_pos)[3]);
+__host__  int get_velocity_at_grid(cs_t *cs, hydro_t *hydro, int local_grid_pos[3], double tracer_u_grid[3]);
 __host__ int set_tr_nbr(cs_t *cs, trs_info * tinfo);
-__host__  int tracer_periodic_local_pos_update(cs_t * cs, double local_pos[3]);
+__host__  int tracer_periodic_local_pos_update(cs_t * cs, trac * tr);
 
 
 //initialisation of struct
@@ -81,11 +79,11 @@ __host__ int tracers_create(cs_t *cs,  pe_t *pe, rt_t *rt, trs_info **trsinfo);
 //main functions
 __host__ int tracers_main( cs_t *cs, hydro_t *hydro, trs_info *tinfo);
 __host__  int tracer_position_update(cs_t *cs, hydro_t *hydro, trs_info *tinfo);
-__host__  void tracer_pos_euler_integ(cs_t * cs,  trac * tr);
+__host__  int tracer_pos_euler_integ(cs_t * cs,  trac * tr);
 __host__ int tracer_vel_update(cs_t *cs, hydro_t *hydro, trs_info *tinfo);
-__host__ void tracer_pos_grids( trac * tr);
-__host__  void tracer_grid_velocities(cs_t *cs, hydro_t *hydro, trac *tr);
-__host__  void bilinear_interp_velocity(trac *tr);
+__host__ int tracer_pos_grids( trac * tr, cs_t *cs);
+__host__  int tracer_grid_velocities(cs_t *cs, hydro_t *hydro, trac *tr);
+__host__  int bilinear_interp_velocity(trac *tr);
 
 //tracer particle exchange
 __host__ int tracer_particle_exchange(cs_t *cs, trs_info * tinfo);

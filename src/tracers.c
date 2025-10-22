@@ -22,8 +22,6 @@
 __host__ int tracers_main( cs_t *cs, hydro_t *hydro, trs_info *tinfo){
 
   // collect halo
-  hydro_u_halo(hydro);
-
   // update the position and get the new velocity
   tracer_position_update(cs, hydro, tinfo);
 
@@ -32,16 +30,8 @@ __host__ int tracers_main( cs_t *cs, hydro_t *hydro, trs_info *tinfo){
 
   //find current velocity
   tracer_vel_update(cs, hydro, tinfo);
-  /*int nlocal_tracers = tinfo->ntracers_local, ncount;
-  trac *tr_arry = tinfo->tr_array; 
-    
-  for(ncount =0; ncount < nlocal_tracers; ncount++ ){
-    tracer_periodic_local_pos_update(cs, tr_arry[ncount].local_pos);
-    tracer_pos_grids(&tr_arry[ncount]);
-    tracer_grid_velocities(cs, hydro, &tr_arry[ncount]);
-    bilinear_interp_velocity(&tr_arry[ncount]);
-  }*/
- free(hydro);
+  
+  //write functions to be implemented
 
   return 0;
 }
@@ -65,8 +55,10 @@ __host__ int tracers_main( cs_t *cs, hydro_t *hydro, trs_info *tinfo){
     for(int dim = 0; dim<NHDIM; dim++){
       tr_arry[nt].actual_pos[dim] += tr_arry[nt].tracer_u[dim];
       tr_arry[nt].local_pos[dim] += tr_arry[nt].tracer_u[dim];
-      tr_arry[nt].rel_local_coords[dim] = (tr_arry[nt].local_pos[dim] >= nlocal[dim]) - (tr_arry[nt].local_pos[dim] < 0);
+      tr_arry[nt].rel_local_coords[dim] = (tr_arry[nt].local_pos[dim] >= nlocal[dim]) - (tr_arry[nt].local_pos[dim] < 0);                                   
     }
+    // tracer periodic update , accesses the neighbouring ranks nlocal to update the local pos
+    tracer_periodic_local_pos_update(cs, &tr_arry[nt]);
   }
 
   return 0;
@@ -74,30 +66,7 @@ __host__ int tracers_main( cs_t *cs, hydro_t *hydro, trs_info *tinfo){
 
  /*****************************************************************************
  * 
- * tracers_euler_integ
- *
- * 
- *****************************************************************************/
-/*__host__  void tracer_pos_euler_integ(cs_t * cs,  trac * tr){
-  
-  int nlocal[3];
-  cs_nlocal(cs, nlocal);
-
-  //if the particle was in a different rank in the previous timestep
-
-  for(int dim =X; dim <NHDIM; dim++ ){
-    tr->actual_pos[dim] += tr->tracer_u[dim];
-    tr->local_pos[dim]  += tr->tracer_u[dim];
-    tr->rel_local_coords[dim] = ((tr->local_pos[dim] >= nlocal[dim]) - (tr->local_pos[dim] < 0));
-  }
-
-  return ;
-  
-}*/
-
- /*****************************************************************************
- * 
- * tracers_euler_integ
+ * tracers_vel_update
  *
  * 
  *****************************************************************************/
@@ -107,8 +76,8 @@ __host__ int tracer_vel_update(cs_t *cs, hydro_t *hydro, trs_info *tinfo){
   trac *tr_arry = tinfo->tr_array; 
     
   for(ncount =0; ncount < nlocal_tracers; ncount++ ){
-    tracer_periodic_local_pos_update(cs, tr_arry[ncount].local_pos);
-    tracer_pos_grids(&tr_arry[ncount]);
+
+    tracer_pos_grids(&tr_arry[ncount], cs);
     tracer_grid_velocities(cs, hydro, &tr_arry[ncount]);
     bilinear_interp_velocity(&tr_arry[ncount]);
   }
@@ -129,16 +98,27 @@ __host__ int tracer_vel_update(cs_t *cs, hydro_t *hydro, trs_info *tinfo){
  *         0* * * * * * *1          0(0,0)= floor(x),floor(y)       1(1,0)= floor(x) + 1,floor(y)
  *********************************************************************************************************/
 
-__host__ void tracer_pos_grids( trac * tr) {
+__host__ int tracer_pos_grids( trac * tr, cs_t *cs) {
   // find immediate grid neighbours
+  int nlocal[3];
+  cs_nlocal(cs, nlocal);
   for (XYcorner corner=XY00; corner<GRID_NEIGHBOUR_COUNT; corner++){
     tr->local_grid_arr[corner][X] = ((corner == XY00 || corner == XY01)) ? 
                                   (int)floor(tr->local_pos[X]) : (int)floor(tr->local_pos[X]) + 1;
+    
+    if (tr->local_grid_arr[corner][X] < -1 || tr->local_grid_arr[corner][X] > nlocal[X] + 1)
+    printf("bad grid index ic=%d local_pos=%g\n", tr->local_grid_arr[corner][X], tr->local_pos[X]);
+
     tr->local_grid_arr[corner][Y] = ((corner == XY00 || corner == XY10)) ? 
                                   (int)floor(tr->local_pos[Y]) : (int)floor(tr->local_pos[Y]) + 1;
+    if (tr->local_grid_arr[corner][Y] < -1 || tr->local_grid_arr[corner][Y] > nlocal[Y] + 1)
+    printf("bad grid index jc=%d local_pos=%g \n", tr->local_grid_arr[corner][Y], tr->local_pos[Y]);
+
     tr->local_grid_arr[corner][Z]  = (int)floor(tr->local_pos[Z]);      
+    if (tr->local_grid_arr[corner][Z] < -1 || tr->local_grid_arr[corner][Z] > nlocal[Z] + 1)
+    printf("bad grid index kc=%d local_pos=%g\n", tr->local_grid_arr[corner][Z], tr->local_pos[Z]);
   }    
-  return;
+  return 0;
 }
 
 /*****************************************************************************
@@ -149,12 +129,12 @@ __host__ void tracer_pos_grids( trac * tr) {
  *
  *****************************************************************************/
 
-__host__  void tracer_grid_velocities(cs_t *cs, hydro_t *hydro, trac *tr){
+__host__  int tracer_grid_velocities(cs_t *cs, hydro_t *hydro, trac *tr){
     
   for (XYcorner corner = XY00; corner < GRID_NEIGHBOUR_COUNT; corner++){
     get_velocity_at_grid(cs, hydro, tr->local_grid_arr[corner], tr->tracer_u_arr[corner]);
   } 
-  return;        
+  return 0;        
 }
 
 /*****************************************************************************
@@ -165,7 +145,7 @@ __host__  void tracer_grid_velocities(cs_t *cs, hydro_t *hydro, trac *tr){
  *
  *****************************************************************************/
 
-__host__  void bilinear_interp_velocity(trac *tr) {
+__host__  int bilinear_interp_velocity(trac *tr) {
 
   double tx, ty;
   double v_y0[3], v_y1[3];
@@ -189,7 +169,7 @@ __host__  void bilinear_interp_velocity(trac *tr) {
   }
   tr->tracer_u[Z] = tr->tracer_u_arr[XY00][Z];
 
-  return ;
+  return 0;
 }
 
 
@@ -446,7 +426,7 @@ __host__ int tracer_allocate_buffer(cs_t *cs, trac *buffSend[3][3][3],
 
         int nsend = countSend[dx+1][dy+1][dz+1]; 
         if (nsend <= 0 || (dx == 0 && dy == 0 && dz == 0)) continue;//skips(1,1,1)
-        buffSend[dx+1][dy+1][dz+1] = malloc(nsend*sizeof(trac));
+        buffSend[dx+1][dy+1][dz+1] = calloc(nsend, sizeof(trac));
 
         if(!buffSend[dx+1][dy+1][dz+1]) pe_fatal(cs->pe, "Send buffer allocation failed for buffSend[%d][%d][%d]"
           , dx+1, dy+1, dz+1);
@@ -462,7 +442,7 @@ __host__ int tracer_allocate_buffer(cs_t *cs, trac *buffSend[3][3][3],
 
         int nrecv = countRecv[dx+1][dy+1][dz+1]; //skips(1,1,1)
         if (nrecv <= 0 || (dx == 0 && dy == 0 && dz == 0)) continue;
-        buffRecv[dx+1][dy+1][dz+1] = malloc(nrecv*sizeof(trac));
+        buffRecv[dx+1][dy+1][dz+1] = calloc(nrecv, sizeof(trac));
 
         if(!buffRecv[dx+1][dy+1][dz+1]) pe_fatal(cs->pe, "Receive buffer allocation failed for buffRecv[%d][%d][%d]"
           , dx+1, dy+1, dz+1);
@@ -493,7 +473,6 @@ __host__ int tracer_update_trac_array_capacity(cs_t * cs, trs_info * tinfo,
     if(!new_arry){
       pe_fatal(cs->pe, "Failed intialization of %d capacity to tracer array", new_capacity);
     }
-    memset(&new_arry[tinfo->ntracer_capacity], 0, req_space * sizeof(trac));
 
     tinfo->tr_array = new_arry;
     tinfo->ntracer_capacity = new_capacity;
@@ -689,6 +668,7 @@ __host__ int tracers_create(cs_t *cs,  pe_t *pe, rt_t *rt, trs_info **trsinfo){
   //passed the created struct to the global scope
   *trsinfo = tinfo;
   free(initial_domain_pos);
+
   return 0;
 }
 
@@ -698,13 +678,14 @@ __host__ int tracers_create(cs_t *cs,  pe_t *pe, rt_t *rt, trs_info **trsinfo){
  *
  * 
  *****************************************************************************/
-__host__ void tracers_parse_input(rt_t *rt, trs_info *tinfo){
+__host__ int tracers_parse_input(rt_t *rt, trs_info *tinfo){
 
   rt_int_parameter(rt, "Ntracers", &tinfo->Ntracers); //total no of tracers requested
   rt_int_parameter(rt, "tracer_io_freq", &tinfo->tracers_io_freq); // freq at which data should be written for tracerrrr
   rt_int_parameter(rt, "tracer_io_no", &tinfo->Ntracers_io_no); //total no of tracers trajec requested
   rt_int_parameter(rt, "tracer_seed", &tinfo->tracer_seed);
 
+  return 0;
 }
 
 /*****************************************************************************
@@ -713,7 +694,7 @@ __host__ void tracers_parse_input(rt_t *rt, trs_info *tinfo){
  * generate random positions for tracers inside the domain
  * 
  *****************************************************************************/
-__host__ void tracers_random_pos(trs_info *tinfo, pe_t *pe, cs_t *cs, double (*initial_domain_pos)[3]){
+__host__ int tracers_random_pos(trs_info *tinfo, pe_t *pe, cs_t *cs, double (*initial_domain_pos)[3]){
 
   int dh = 0;// initiate tracers at least 5 grid points from the boundary
   double ntotal[3];
@@ -732,7 +713,7 @@ __host__ void tracers_random_pos(trs_info *tinfo, pe_t *pe, cs_t *cs, double (*i
     }
     initial_domain_pos[nt][Z] = 1.0;
   }
-
+  return 0;
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -778,28 +759,41 @@ __host__  int tracer_pos_rank(cs_t * cs, double domain_pos[3]){
  *
  * fetches the lattice velocity corresponding to a grid posint
  *****************************************************************************/
-__host__  void get_velocity_at_grid(cs_t *cs, hydro_t *hydro, int local_grid_pos[3], double tracer_u_grid[3]) {
+__host__  int get_velocity_at_grid(cs_t *cs, hydro_t *hydro, int local_grid_pos[3], double tracer_u_grid[3]) {
 
-  // if (local_grid_pos[X] < 1 - cs->param->nhalo){pe_info(cs->pe, "local_grid_pos X = %d", local_grid_pos[X]);}
+  int index = cs_index(cs, local_grid_pos[X], local_grid_pos[Y], local_grid_pos[Z]);
+  hydro_u(hydro, index, tracer_u_grid);
 
-    int index = cs_index(cs, local_grid_pos[X], local_grid_pos[Y], local_grid_pos[Z]);
-    hydro_u(hydro, index, tracer_u_grid);
+  return 0;
 
 }
 
 /*****************************************************************************
  * added by jain
  * tracer_periodic_pos_update
- *
+ * 
+ ************************* must do the periodic update before particle exchange **** 
+ * 
  * makes sure local positions always stays inside the rank
  * if the particle was in a different rank in the previous timestep
- *
+ * 
  *****************************************************************************/
-__host__  int tracer_periodic_local_pos_update(cs_t * cs, double local_pos[3]){
-  int nlocal[3];
-  cs_nlocal(cs, nlocal);
+__host__  int tracer_periodic_local_pos_update(cs_t * cs, trac * tr){
+  double nlocal[3];
+
   for (int dim = X; dim < NHDIM; dim++){
-    local_pos[dim] = fmod( local_pos[dim],nlocal[dim]) + nlocal[dim] * (local_pos[dim] < 0) ;
+   
+
+    if (tr->rel_local_coords[dim] == 0) continue;
+    
+    int idm = (cs->param->mpi_cartcoords[dim] + tr->rel_local_coords[dim]) % cs->param->mpi_cartsz[dim];
+    nlocal[dim] = cs->listnlocal[dim][idm];
+
+    if(nlocal[dim] == 0) continue;
+
+
+    tr->local_pos[dim] = fmod(tr->local_pos[dim], nlocal[dim]) + (nlocal[dim] * (tr->local_pos[dim] < 0.0));
+    
   }
    return 0;
 }
@@ -851,7 +845,7 @@ __host__  int tracer_periodic_local_pos_update(cs_t * cs, double local_pos[3]){
  *
  * initializes the mpi_data type for the tracer struct stricv\ctky for sending
  *****************************************************************************/
-__host__ void create_mpi_trac_datatype(MPI_Datatype * MPI_TRAC_TYPE){
+__host__ int create_mpi_trac_datatype(MPI_Datatype * MPI_TRAC_TYPE){
 
   const int num_items = 5;
   int blocks[5] = {1, 3, 3, 3, 3};
@@ -867,7 +861,8 @@ __host__ void create_mpi_trac_datatype(MPI_Datatype * MPI_TRAC_TYPE){
 
   MPI_Type_create_struct(num_items, blocks, offsets, types, MPI_TRAC_TYPE);
   MPI_Type_commit(MPI_TRAC_TYPE);
-  return;
+
+  return 0;
 
 }
 
@@ -879,7 +874,7 @@ __host__ void create_mpi_trac_datatype(MPI_Datatype * MPI_TRAC_TYPE){
  * also removes tr_Array and tinfo srtuct
  *****************************************************************************/
 
-__host__ void tracers_destruct(trs_info **tinfo, MPI_Datatype * MPI_TRAC_TYPE){
+__host__ int tracers_destruct(trs_info **tinfo, MPI_Datatype * MPI_TRAC_TYPE){
 
   if(MPI_TRAC_TYPE && *MPI_TRAC_TYPE != MPI_DATATYPE_NULL){
      MPI_Type_free(MPI_TRAC_TYPE);
@@ -894,6 +889,6 @@ __host__ void tracers_destruct(trs_info **tinfo, MPI_Datatype * MPI_TRAC_TYPE){
         free(*tinfo);
         *tinfo = NULL;
   }
-  return ;
+  return 0;
 }
 
