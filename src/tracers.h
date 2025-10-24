@@ -6,37 +6,29 @@
 #include "hydro.h"
 #include "ran.h"
 #include "runtime.h"
-//temporary
+#include "util_fopen.h"
 
 #define MPI_TAG_TRAC_COUNT 55050
-
 #define MPI_TAG_TRAC_COMM_BUF 77050
-// #define MPI_TAG_TRAC_BAC_FOR_BUF 88050
+
 
 typedef enum {XY00=0, XY10, XY11, XY01, GRID_NEIGHBOUR_COUNT} XYcorner;
 
-typedef struct tracer_data trac_d;
-
-struct tracer_data{
-    double tr_u[3];
-    double tr_actual_pos[3];
-};
-
 typedef struct tracer{
-    // int rank_current_ts; /* current rank of the position of the tracer*/
-    // int rank_previous_ts;
     int tracer_id;
     double intial_pos[3];
     double actual_pos[3];
     double local_pos[3];
     double tracer_u[3];
+    int file_op;// if closed and 1 if open */
+    int sel_for_writing; // 1 if selected for writing */
 
     int rel_local_coords[3];
     int local_grid_arr[GRID_NEIGHBOUR_COUNT][3];
     double tracer_u_arr[GRID_NEIGHBOUR_COUNT][3];
 
-    MPI_File tr_file;
-    int file_op; /* 0 if closed and 1 if open*/
+    
+    FILE * tr_file;         
     
 } trac;
 
@@ -57,7 +49,6 @@ typedef struct  tracers_info{
 }trs_info;
 
 //mpi data-type
-
 extern MPI_Datatype MPI_TRAC_TYPE;
 
 __host__ int create_mpi_trac_datatype(MPI_Datatype * MPI_TRAC_TYPE);
@@ -98,6 +89,14 @@ __host__ int tracer_pack_buffer(cs_t *cs, trs_info *tinfo, trac *buffSend[3][3][
 
 __host__ int tracer_send_recv_particles(cs_t * cs, trs_info * tinfo, trac * buffSend[3][3][3], trac * buffRecv[3][3][3],
                 int countSend[3][3][3], int countRecv[3][3][3], MPI_Datatype MPI_TRAC_TYPE);
-__host__ int tracer_unpack_recv_buffer(cs_t *cs, trs_info * tinfo, trac *buffRecv[3][3][3], int countRecv[3][3][3]);                
+__host__ int tracer_unpack_recv_buffer(cs_t *cs, trs_info * tinfo, trac *buffRecv[3][3][3], int countRecv[3][3][3]);   
+
+//tracer write functions
+__host__ int tracer_open_file(cs_t * cs, trac *tr);
+__host__ int tracer_close_file(trac *tr);
+__host__ int tracer_write_file(cs_t * cs,  trs_info * tinfo, int step);
+__host__ int tracer_init_file(cs_t * cs, trs_info *tinfo);
+__host__ int tracer_write_num_distribute(cs_t *cs, trs_info *tinfo);
+__host__ int tracer_id_select_writing(cs_t *cs, trs_info *tinfo, int tracers_to_each_rank);
 
 #endif

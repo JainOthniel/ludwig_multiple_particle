@@ -511,6 +511,16 @@ void ludwig_run(const char * inputfile) {
   colloids_info_ntotal(ludwig->collinfo, &ncolloid);
   if (ncolloid) colloids_memcpy(ludwig->collinfo, tdpMemcpyHostToDevice);
 
+  ////////////////////////////////////////////////////////////////////////////
+  //tracer - jain
+  tracers_create(ludwig->cs, ludwig->pe, ludwig->rt, &ludwig->tinfo);
+  pe_info(ludwig->pe, "intiating %d tracers", ludwig->tinfo->Ntracers);
+  // open files for writing trajectories
+  if(ludwig->tinfo && (ludwig->tinfo->Ntracers_io_no > 0)){
+    tracer_init_file(ludwig->cs, ludwig->tinfo);
+  }
+  //////////////////////////////////////////////////////////////////////////////
+
   /* Lap timer: include initial statistics in first trip */
   TIMER_start(TIMER_LAP);
 
@@ -526,50 +536,6 @@ void ludwig_run(const char * inputfile) {
   pe_info(ludwig->pe, "Starting time step loop.\n");
 
   /* sync tasks before main loop for timing purposes */
-  MPI_Barrier(comm);
-
-  //added as extra jain
-  // double pos[3]={0.000040075,6.3024,1.0};
-  // double pos[3]={25.0,8.0,1.0};
-  // double uu[3];
-
-  /*if (pe_mpi_rank(ludwig->pe) == 0) {
-        printf("Enter X position: ");
-        fflush(stdout);
-        scanf("%lf", &pos[X]);
-        printf("Enter Y position: ");
-        fflush(stdout);
-        scanf("%lf", &pos[Y]);
-        printf("Enter Z position: ");
-        fflush(stdout);
-        scanf("%lf", &pos[Z]);
-  }
-
-  MPI_Bcast(pos, 3, MPI_DOUBLE, 0, comm); 
-  MPI_Barrier(comm);*/
-  int rank = cs_cart_rank(ludwig->cs);
-  // printf("passed by rank %d", rank);
-  tracers_create(ludwig->cs, ludwig->pe, ludwig->rt, &ludwig->tinfo);
-  //int N = ludwig->tinfo->Ntracers;
-  // if (rank == 0){
-  //   for(int n=0; n<N; n++){
-  //     printf("n = %d, X = %f, Y = %f, Z = %f\n", n +1, ludwig->tinfo->tr_array[n].intial_pos[X],
-  //           ludwig->tinfo->tr_array[n].intial_pos[Y], ludwig->tinfo->tr_array[n].intial_pos[Z]);
-  //   }
-  // }
-  /*for(int n=0; n<ludwig->tinfo->ntracers_local; n++){
-      printf("\nrank = %d, n = %d, X = %f, Y = %f, Z = %f\n", rank, ludwig->tinfo->tr_array[n].tracer_id, 
-        ludwig->tinfo->tr_array[n].intial_pos[X],
-            ludwig->tinfo->tr_array[n].intial_pos[Y], ludwig->tinfo->tr_array[n].intial_pos[Z]);
-    }*/
-
-  /*int total_trac;
-  MPI_Reduce(&ludwig->tinfo->ntracers_local,&total_trac, 1, MPI_INT, MPI_SUM, 0, comm);
-  if (rank == 0) printf("\ntotal_trac = %d\n", total_trac);*/
-  // tracer_create(ludwig->cs, &ludwig->tr);
-  // tracer_init(ludwig->tr, ludwig->cs, pos);
-  // tracer_init_file(ludwig->cs, ludwig->tr);
-  /* make sure cart communicator and rank info are available */
   MPI_Barrier(comm);
 
   while (physics_control_next_step(ludwig->phys)) {
@@ -907,9 +873,20 @@ void ludwig_run(const char * inputfile) {
       lb_propagation(ludwig->lb);
       TIMER_stop(TIMER_PROPAGATE);
     }
+
+    //////////////////////////////////////////////////////////////////////////////////////////
+    // tracer jain
     hydro_u_halo(ludwig->hydro);
     tracers_main(ludwig->cs,ludwig->hydro, ludwig->tinfo);
+    if(ludwig->tinfo && (step % ludwig->tinfo->tracers_io_freq == 0)){
 
+      pe_info(ludwig->pe, "Writing tracer dat file at step %d \n", step);
+      tracer_write_file(ludwig->cs, ludwig->tinfo, step);
+
+    }
+    //set hydro halo to zero
+    // hydro_u_zero(ludwig->hydro, uzero);
+    /////////////////////////////////////////////////////////////////////////////////////////////
     TIMER_start(TIMER_DIAGNOSTIC_OUTPUT); /* Time diagnostics and i/o */
 
     /* Configuration dump */
@@ -1046,26 +1023,9 @@ void ludwig_run(const char * inputfile) {
     TIMER_stop(TIMER_STEPS); /* inclusive of diagnostic/io */
 
     MPI_Barrier(comm);
-
-    // hydro_u_halo(ludwig->hydro); // collect halo for all ranks
-    
-    // MPI_Barrier(comm);
-    /*if (step == 5000){
-       hydro_u_halo(ludwig->hydro); // collect halo for all ranks
-    }*/
-    //  tracer_position_update(ludwig->cs, ludwig->hydro, ludwig->tr);
-     /*if (cs_cart_rank(ludwig->cs) == ludwig->tr->rank_current_ts){
-        printf("\n%d,%e,%e,%e,%e,%e,%e\n", step,
-          ludwig->tr->tr_d->tr_actual_pos[X], ludwig->tr->tr_d->tr_actual_pos[Y], ludwig->tr->tr_d->tr_actual_pos[Z],
-        ludwig->tr->tr_d->tr_u[X], ludwig->tr->tr_d->tr_u[Y],ludwig->tr->tr_d->tr_u[Z]);
-        
-     }*/
-    //  tracer_write_file(ludwig->cs, ludwig->tr, step);
-    MPI_Barrier(comm);
     //
     /* Next time step */
   }
-  // tracer_close_file(ludwig->tr);
 
   /* End of time step loop. A barrier, before closing down. */
   MPI_Barrier(comm);
@@ -1113,6 +1073,7 @@ void ludwig_run(const char * inputfile) {
 
   if (ludwig->stat_sigma) stats_sigma_free(ludwig->stat_sigma);
   if (ludwig->fe) ludwig->fe->func->free(ludwig->fe);
+
   //added jain
   if(ludwig->tinfo) tracers_destruct(&ludwig->tinfo, &MPI_TRAC_TYPE);
 

@@ -2,10 +2,8 @@
 #include <stdlib.h>
 #include<stddef.h>
 #include <math.h> 
-#include <string.h> 
 #include "tracers.h"
 
-// MPI_Datatype MPI_TRAC_TYPE;
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////
 
@@ -31,8 +29,6 @@ __host__ int tracers_main( cs_t *cs, hydro_t *hydro, trs_info *tinfo){
   //find current velocity
   tracer_vel_update(cs, hydro, tinfo);
   
-  //write functions to be implemented
-
   return 0;
 }
 
@@ -55,10 +51,14 @@ __host__ int tracers_main( cs_t *cs, hydro_t *hydro, trs_info *tinfo){
     for(int dim = 0; dim<NHDIM; dim++){
       tr_arry[nt].actual_pos[dim] += tr_arry[nt].tracer_u[dim];
       tr_arry[nt].local_pos[dim] += tr_arry[nt].tracer_u[dim];
-      tr_arry[nt].rel_local_coords[dim] = (tr_arry[nt].local_pos[dim] >= nlocal[dim]) - (tr_arry[nt].local_pos[dim] < 0);                                   
+      tr_arry[nt].rel_local_coords[dim] = (tr_arry[nt].local_pos[dim] >= nlocal[dim]) - (tr_arry[nt].local_pos[dim] < 0);
+      
+      //make the relative coordinates to 0 in those directions where there is no domain split
+      if(nlocal[dim] == 1){tr_arry[nt].rel_local_coords[dim] = 0;}                                   
     }
     // tracer periodic update , accesses the neighbouring ranks nlocal to update the local pos
     tracer_periodic_local_pos_update(cs, &tr_arry[nt]);
+
   }
 
   return 0;
@@ -76,7 +76,6 @@ __host__ int tracer_vel_update(cs_t *cs, hydro_t *hydro, trs_info *tinfo){
   trac *tr_arry = tinfo->tr_array; 
     
   for(ncount =0; ncount < nlocal_tracers; ncount++ ){
-
     tracer_pos_grids(&tr_arry[ncount], cs);
     tracer_grid_velocities(cs, hydro, &tr_arry[ncount]);
     bilinear_interp_velocity(&tr_arry[ncount]);
@@ -103,20 +102,14 @@ __host__ int tracer_pos_grids( trac * tr, cs_t *cs) {
   int nlocal[3];
   cs_nlocal(cs, nlocal);
   for (XYcorner corner=XY00; corner<GRID_NEIGHBOUR_COUNT; corner++){
+
     tr->local_grid_arr[corner][X] = ((corner == XY00 || corner == XY01)) ? 
                                   (int)floor(tr->local_pos[X]) : (int)floor(tr->local_pos[X]) + 1;
-    
-    if (tr->local_grid_arr[corner][X] < -1 || tr->local_grid_arr[corner][X] > nlocal[X] + 1)
-    printf("bad grid index ic=%d local_pos=%g\n", tr->local_grid_arr[corner][X], tr->local_pos[X]);
 
     tr->local_grid_arr[corner][Y] = ((corner == XY00 || corner == XY10)) ? 
                                   (int)floor(tr->local_pos[Y]) : (int)floor(tr->local_pos[Y]) + 1;
-    if (tr->local_grid_arr[corner][Y] < -1 || tr->local_grid_arr[corner][Y] > nlocal[Y] + 1)
-    printf("bad grid index jc=%d local_pos=%g \n", tr->local_grid_arr[corner][Y], tr->local_pos[Y]);
-
+    
     tr->local_grid_arr[corner][Z]  = (int)floor(tr->local_pos[Z]);      
-    if (tr->local_grid_arr[corner][Z] < -1 || tr->local_grid_arr[corner][Z] > nlocal[Z] + 1)
-    printf("bad grid index kc=%d local_pos=%g\n", tr->local_grid_arr[corner][Z], tr->local_pos[Z]);
   }    
   return 0;
 }
@@ -218,29 +211,6 @@ __host__ int tracer_particle_exchange(cs_t *cs, trs_info * tinfo){
 
   // unwrap the incomin buffer
   tracer_unpack_recv_buffer(cs, tinfo, buffRecv, countRecv);
-  /*int recv_size =0;
-  trac *temp_arr = malloc(countRecv[1][1][1]*sizeof(trac));
-   for(int dx = -1; dx<=1; dx++){
-    for(int dy = -1; dy<=1; dy++){
-      for(int dz = -1; dz<=1; dz++){
-
-        if(dx ==0 && dy ==0 && dz ==0) continue;
-        int i = dx+1; int j = dy +1; int k = dz +1;
-        memcpy(&temp_arr[recv_size], buffRecv[i][j][k],countRecv[i][j][k] * sizeof(trac));
-        
-        recv_size+=countRecv[i][j][k]; 
-      }
-    }
-  }
-
-  if (recv_size != countRecv[1][1][1]){
-    pe_fatal(cs->pe, "no of recvied particle = %d , mismatched with the count of total particles expected = %d",
-    recv_size, countRecv[1][1][1]);
-  }
-
-  memcpy(&tinfo->tr_array[tinfo->ntracers_local], temp_arr, recv_size*sizeof(trac));
-  tinfo->ntracers_local += recv_size;
-  free(temp_arr);*/
 
   //free the buffer
 
@@ -253,98 +223,10 @@ __host__ int tracer_particle_exchange(cs_t *cs, trs_info * tinfo){
       }
     }
   }
-  
+
   return 0;
 
 }
-
-
-/*****************************************************************************
- * 
- * tracer_send_check
- *
- * 
- ****************************************************************************
-
-__host__ int tracer_particle_exchange(cs_t *cs, trs_info * tinfo){
-  
-  int nlocal_tracers = tinfo->ntracers_local;
-  trac *tr_arry = tinfo->tr_array;
-
-  int countSend[2][3] ={0}, countRecv[2][3] = {0};
-
-  //send the count of particles leaving and recevi the count entering the rank
-  tracer_send_recv_count(cs, &tr_arry, nlocal_tracers, countSend, countRecv);
-
-  //prepare the buffer for sending and receving
-  //an array of 2*3 shape pointer pointing to an array of shape 3
-  double ( *buffSend[2][3])[3], ( *buffRecv [2][3])[3];
-
-  // allocate memory for buffer
-  for (int dim = X; dim <NHDIM; dim++){
-
-    buffSend[FORWARD][dim] = calloc(countSend[FORWARD][dim], sizeof(*buffSend[FORWARD][dim]));
-    buffSend[BACKWARD][dim] = calloc(countSend[BACKWARD][dim], sizeof(*buffSend[BACKWARD][dim]));
-    
-    buffRecv[FORWARD][dim] = calloc(countRecv[FORWARD][dim], sizeof(*buffRecv[FORWARD][dim]));
-    buffRecv[BACKWARD][dim] = calloc(countRecv[BACKWARD][dim], sizeof(*buffRecv[BACKWARD][dim]));
-  }
-
-  //prepare the send buffer and reorder the tr_array, also check if it has space for the incoming particle
-
-  //send and receive the buffer
-
-  // unwrap the incomin buffer
-
-  //free the buffer
-
-  
-  return 0;
-
-}*/
-
-/*****************************************************************************
- * 
- * tracer_send_recv_count
- * written assuming tracer doesn't move to the neighbouring diagonal rank 
- * 
- *****************************************************************************
-
-__host__ int tracer_send_recv_count(cs_t *cs, trac *tr_arry, 
-          int nlocal_tracers, int countSend[2][3], int countRecv[2][3]){
-
-  // count the particles leaving through each faces.
-  for(int ncount = 0; ncount < nlocal_tracers; ncount++){
-
-    int *rcoords = tr_arry[ncount].rel_local_coords;
-    if (!rcoords[X] && !rcoords[Y] && !rcoords[Z]) continue;
-
-    for (int dim = 0; dim < NHDIM; dim++){
-      if (rcoords[dim] == 0) continue;
-      if (rcoords > 0) countSend[FORWARD][dim]++;
-      else countSend[BACKWARD][dim]++;
-
-      break;// assumes particle only moves throough the faces.
-    }
-  }
-
-  // send the outgoing particle count and receving the incoming particle count
-  int tagForBac = MPI_TAG_TRAC_FOR_BAC_COUNT, tagBacFor = MPI_TAG_TRAC_BAC_FOR_COUNT;
-
-  for (int dim = 0; dim < NHDIM; dim++){
-
-    MPI_Sendrecv(&countSend[FORWARD][dim], 1, MPI_INT, cs->mpi_cart_neighbours[FORWARD][dim], tagForBac + dim,
-    &countRecv[BACKWARD][dim], 1, MPI_INT, cs->mpi_cart_neighbours[BACKWARD][dim], tagBacFor + dim,
-    cs->commcart, MPI_STATUS_IGNORE);
-    
-    MPI_Sendrecv(&countSend[BACKWARD][dim], 1, MPI_INT, cs->mpi_cart_neighbours[BACKWARD][dim], tagBacFor + dim,
-    &countRecv[FORWARD][dim], 1, MPI_INT, cs->mpi_cart_neighbours[FORWARD][dim],tagForBac + dim,
-    cs->commcart, MPI_STATUS_IGNORE);
-  }
-
-  return 0;
-}
-*/
 
 /*****************************************************************************
  * 
@@ -498,7 +380,7 @@ __host__ int tracer_pack_buffer(cs_t *cs, trs_info *tinfo, trac *buffSend[3][3][
   for(int count = 0; count< nlocal_tracers; count++){
     int *dxyz = tinfo->tr_array[count].rel_local_coords;
 
-    if(dxyz[X] || dxyz[Y] || dxyz[Z]){
+    if(dxyz[X]|| dxyz[Y] || dxyz[Z]){
       int i = dxyz[X] + 1, j = dxyz[Y] + 1, k = dxyz[Z] + 1;
       int idx = sendBuff_idx[i][j][k];
 
@@ -616,13 +498,19 @@ __host__ int tracers_create(cs_t *cs,  pe_t *pe, rt_t *rt, trs_info **trsinfo){
   trs_info *tinfo;    
   tinfo = (trs_info *) calloc(1,sizeof(trs_info));
   tracers_parse_input(rt, tinfo);
-  set_tr_nbr(cs, tinfo);
+
+  // no of tracers trajectories requested shouldn't exceed total no of tracers
+  assert(tinfo->Ntracers >= tinfo->Ntracers_io_no); 
+  if (tinfo->Ntracers <= 0){
+    pe_info(cs->pe, "no tracers specified - Tracer number %d", tinfo->Ntracers);
+    return 0;
+  }
 
   //make an array of initial positions for tracers
   double (*initial_domain_pos)[3];
   initial_domain_pos = calloc(tinfo->Ntracers, sizeof(*initial_domain_pos));
 
-  // generate random positions
+   // generate random positions  for tracers
   tracers_random_pos(tinfo, pe, cs, initial_domain_pos);
 
   int working_rank = cs_cart_rank(cs);
@@ -638,14 +526,20 @@ __host__ int tracers_create(cs_t *cs,  pe_t *pe, rt_t *rt, trs_info **trsinfo){
   
   tinfo->ntracers_local = nlocal_tracer_count;
   tinfo->ntracer_capacity = tinfo->ntracers_local + tinfo->Ntracers/5;
+
+  //find the neighbouring ranks
+  set_tr_nbr(cs, tinfo);
+
+//////////////////////////////////////////////////////////////////////////////
+//initialize and allocate memory for tracer struct
+//////////////////////////////////////////////////////////////////////////////
+
+  //define an mpi struct data type for tracer struct(for communication)
+  create_mpi_trac_datatype(&MPI_TRAC_TYPE);
   
   // allocate memory for the tracer struct
   trac *tr;    
   tr = (trac *) calloc(tinfo->ntracer_capacity, sizeof(trac));
-
-  //define an mpi struct data type for tracer struct(for communication)
-
-  create_mpi_trac_datatype(&MPI_TRAC_TYPE);
 
   // initialize/ build the tracers for each rank
   int noffset[3];
@@ -665,7 +559,7 @@ __host__ int tracers_create(cs_t *cs,  pe_t *pe, rt_t *rt, trs_info **trsinfo){
     tr[nlocal_tracer_count].tracer_id = i+1;
     nlocal_tracer_count++;
   }
-  //passed the created struct to the global scope
+  //pass the created struct to the global scope
   *trsinfo = tinfo;
   free(initial_domain_pos);
 
@@ -782,15 +676,15 @@ __host__  int tracer_periodic_local_pos_update(cs_t * cs, trac * tr){
   double nlocal[3];
 
   for (int dim = X; dim < NHDIM; dim++){
-   
 
     if (tr->rel_local_coords[dim] == 0) continue;
+    int coords = cs->param->mpi_cartcoords[dim];
+    int size = cs->param->mpi_cartsz[dim];
     
-    int idm = (cs->param->mpi_cartcoords[dim] + tr->rel_local_coords[dim]) % cs->param->mpi_cartsz[dim];
+    // makes sure it wraps around
+    int idm = (coords + tr->rel_local_coords[dim] + size) % size;
     nlocal[dim] = cs->listnlocal[dim][idm];
-
     if(nlocal[dim] == 0) continue;
-
 
     tr->local_pos[dim] = fmod(tr->local_pos[dim], nlocal[dim]) + (nlocal[dim] * (tr->local_pos[dim] < 0.0));
     
@@ -847,17 +741,19 @@ __host__  int tracer_periodic_local_pos_update(cs_t * cs, trac * tr){
  *****************************************************************************/
 __host__ int create_mpi_trac_datatype(MPI_Datatype * MPI_TRAC_TYPE){
 
-  const int num_items = 5;
-  int blocks[5] = {1, 3, 3, 3, 3};
+  const int num_items = 7;
+  int blocks[7] = {1, 3, 3, 3, 3, 1,1};
   
-  MPI_Datatype types[5] = {MPI_INT, MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE};
-  MPI_Aint offsets[5];
+  MPI_Datatype types[7] = {MPI_INT, MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE, MPI_INT, MPI_INT};
+  MPI_Aint offsets[7];
 
   offsets[0] = offsetof(trac, tracer_id);
   offsets[1] = offsetof(trac, intial_pos);
   offsets[2] = offsetof(trac, actual_pos);
   offsets[3] = offsetof(trac, local_pos);
   offsets[4] = offsetof(trac, tracer_u);
+  offsets[5] = offsetof(trac, file_op);
+  offsets[6] = offsetof(trac, sel_for_writing);
 
   MPI_Type_create_struct(num_items, blocks, offsets, types, MPI_TRAC_TYPE);
   MPI_Type_commit(MPI_TRAC_TYPE);
@@ -892,3 +788,162 @@ __host__ int tracers_destruct(trs_info **tinfo, MPI_Datatype * MPI_TRAC_TYPE){
   return 0;
 }
 
+///////////////////////////////////////////////////////////////////////////////////
+
+// Writing functions
+
+///////////////////////////////////////////////////////////////////////////////////
+
+/*****************************************************************************
+ * added by jain
+ * tracer_open_file
+ *
+ *opens tracer dat file
+ *
+ *****************************************************************************/
+
+__host__ int tracer_open_file(cs_t * cs, trac *tr){
+
+  char filename[64];
+  snprintf(filename, sizeof(filename), "tracer_%07d.dat", tr->tracer_id);
+  tr->tr_file = fopen(filename,"w");
+  fprintf(tr->tr_file, "timestep x y z ux uy uz\n");
+  tr->file_op = 1; 
+  fclose(tr->tr_file);
+  tr->file_op = 0;
+
+  return 0;
+}
+
+/*****************************************************************************
+ * added by jain
+ * tracer_close_file
+ *
+ *closes tracer dat file
+ *
+ *****************************************************************************/
+
+__host__ int tracer_close_file(trac *tr){
+
+  if (tr->file_op == 1 && (tr->rel_local_coords[X] != 0 || tr->rel_local_coords[Y] != 0 
+                                          || tr->rel_local_coords[Z] != 0)){
+  // MPI_File_close(&tr->tr_file);
+  fclose(tr->tr_file);
+  tr->file_op = 0;
+  }
+  return 0;
+}
+
+/*****************************************************************************
+ * added by jain
+ * tracer_init_file
+ *
+ *initiate tracer dat file
+ *
+ *****************************************************************************/
+
+__host__ int  tracer_init_file(cs_t * cs, trs_info *tinfo){
+
+  // char head[64];
+  // equally distribute tracers to ranks for wrtiting trajectories.
+  int tracers_to_each_rank = tracer_write_num_distribute(cs, tinfo);
+  
+  if(tracers_to_each_rank != 0){
+    
+    tracer_id_select_writing(cs, tinfo, tracers_to_each_rank);
+    for(int nlt =0; nlt < tinfo->ntracers_local; nlt++){
+
+      if (tinfo->tr_array[nlt].sel_for_writing != 1){ continue;}
+      tracer_open_file(cs, &tinfo->tr_array[nlt]);
+
+    }
+  }
+
+  return 0; 
+}
+
+/*****************************************************************************
+ * added by jain
+ * 
+ * tracer_write_file
+ *
+ * write tracer dat file
+ *
+ *****************************************************************************/
+
+__host__ int tracer_write_file(cs_t * cs,  trs_info * tinfo, int step){
+
+  
+
+  for(int nlt =0; nlt< tinfo->ntracers_local; nlt++){
+
+    if (tinfo->tr_array[nlt].sel_for_writing != 1) continue;
+    char filename[256];
+    snprintf(filename, sizeof(filename), "tracer_%07d.dat", tinfo->tr_array[nlt].tracer_id);
+    tinfo->tr_array[nlt].tr_file = fopen(filename,"a");
+
+    // fseek(tinfo->tr_array[nlt].tr_file, 0, SEEK_END);
+    fprintf(tinfo->tr_array[nlt].tr_file,"%d %.8e %.8e %.8e %.8e %.8e %.8e\n", step,
+    tinfo->tr_array[nlt].actual_pos[X], tinfo->tr_array[nlt].actual_pos[Y], tinfo->tr_array[nlt].actual_pos[Z],
+    tinfo->tr_array[nlt].tracer_u[X], tinfo->tr_array[nlt].tracer_u[Y], tinfo->tr_array[nlt].tracer_u[Z]);
+    
+    /*if(step % 2000 == 0){
+      fflush(tinfo->tr_array[nlt].tr_file);
+    }*/    
+    fclose(tinfo->tr_array[nlt].tr_file);
+
+  }
+  return 0;
+
+}
+
+/*****************************************************************************
+ * added by jain
+ * tracer_write_num_distribute
+ *
+ * calculate the required no of tracers for writing from the requested number
+ * such that the requested number is equally distributed among the ranks
+ *
+ *****************************************************************************/
+__host__ int tracer_write_num_distribute(cs_t *cs, trs_info *tinfo){
+
+  int working_rank = cs_cart_rank(cs);
+  int total_size = cs->param->mpi_cartsz[X] * cs->param->mpi_cartsz[Y] * cs->param->mpi_cartsz[Z];
+
+  //divide the tracer trajectories requested  equally to ranks. if the requested number cannot be eqally distributed
+  // then each extra will be divided to ranks starting from 0.
+  int tracers_to_each_rank = (tinfo->Ntracers_io_no / total_size) + (tinfo->Ntracers_io_no % total_size > working_rank);
+  
+  return tracers_to_each_rank;
+}
+
+/*****************************************************************************
+ * added by jain
+ * tracer_id_select_writing
+ *
+ * selecting the tracers for writing at equal intervals from the local tracer array
+ * based on the set number of trajectories for the rank.
+ *****************************************************************************/
+
+ __host__ int tracer_id_select_writing(cs_t *cs, trs_info *tinfo, int tracers_to_each_rank){
+
+  //if required no is not present in one rank then write for all locally available tracers
+  int count_space = (tinfo->ntracers_local >= tracers_to_each_rank) ? tinfo->ntracers_local / tracers_to_each_rank : 1;
+  
+  int count_inclu = 0;
+  for(int nlt=0; nlt < tinfo->ntracers_local; nlt++){
+
+    // select tracers for writing, at equal intervals from the local tracers array
+    int idx = (nlt % count_space == 0) ? nlt : -1; 
+    if (idx >= 0){
+      tinfo->tr_array[idx].sel_for_writing = 1; // set the tracer for writing
+      count_inclu++;
+    } 
+
+    // break after selecting required number
+    if (count_inclu == tracers_to_each_rank ) {
+      break;
+    }
+  }
+  return 0;  
+ }
