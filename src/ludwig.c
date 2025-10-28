@@ -880,7 +880,7 @@ void ludwig_run(const char * inputfile) {
     tracers_main(ludwig->cs,ludwig->hydro, ludwig->tinfo);
     if(ludwig->tinfo && (step % ludwig->tinfo->tracers_io_freq == 0)){
 
-      pe_info(ludwig->pe, "Writing tracer dat file at step %d \n", step);
+      // pe_info(ludwig->pe, "Writing tracer dat file at step %d \n", step);
       tracer_write_file(ludwig->cs, ludwig->tinfo, step);
 
     }
