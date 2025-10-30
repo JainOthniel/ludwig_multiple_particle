@@ -516,7 +516,7 @@ void ludwig_run(const char * inputfile) {
   tracers_create(ludwig->cs, ludwig->pe, ludwig->rt, &ludwig->tinfo);
   pe_info(ludwig->pe, "intiating %d tracers", ludwig->tinfo->Ntracers);
   // open files for writing trajectories
-  if(ludwig->tinfo && (ludwig->tinfo->Ntracers_io_no > 0)){
+  if(ludwig->tinfo){
     tracer_init_file(ludwig->cs, ludwig->tinfo);
   }
   //////////////////////////////////////////////////////////////////////////////
@@ -878,11 +878,18 @@ void ludwig_run(const char * inputfile) {
     // tracer jain
     hydro_u_halo(ludwig->hydro);
     tracers_main(ludwig->cs,ludwig->hydro, ludwig->tinfo);
-    if(ludwig->tinfo && (step % ludwig->tinfo->tracers_io_freq == 0)){
-
+    if(ludwig->tinfo && ludwig->tinfo->tracers_io_freq > 0){
       // pe_info(ludwig->pe, "Writing tracer dat file at step %d \n", step);
-      tracer_write_file(ludwig->cs, ludwig->tinfo, step);
+      if(step % ludwig->tinfo->tracers_io_freq == 0){
+        tracer_write_trac_file(ludwig->cs, ludwig->tinfo, step);
+      }  
+    }
 
+    if(ludwig->tinfo && ludwig->tinfo->tracer_MSD_io_freq > 0){
+      if (step % ludwig->tinfo->tracer_MSD_io_freq == 0){
+         MSD_trac_Calculate(ludwig->tinfo, ludwig->cs);
+         tracer_write_MSD_file(ludwig->cs, ludwig->tinfo, step);
+      }
     }
     //set hydro halo to zero
     // hydro_u_zero(ludwig->hydro, uzero);

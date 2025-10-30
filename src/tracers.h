@@ -28,8 +28,7 @@ typedef struct tracer{
     double tracer_u_arr[GRID_NEIGHBOUR_COUNT][3];
 
     
-    FILE * tr_file;         
-    
+    FILE * tr_file;     
 } trac;
 
 
@@ -42,10 +41,15 @@ typedef struct  tracers_info{
     int tracers_io_freq;
     int Ntracers_io_no;
     int tracer_seed;
+    int tracer_MSD_io_freq;
 
     int tr_nbr[3][3][3];
 
+    double MSD;
+
     trac *tr_array;
+    FILE * MSD_file;        
+
 }trs_info;
 
 //mpi data-type
@@ -75,6 +79,7 @@ __host__ int tracer_vel_update(cs_t *cs, hydro_t *hydro, trs_info *tinfo);
 __host__ int tracer_pos_grids( trac * tr, cs_t *cs);
 __host__  int tracer_grid_velocities(cs_t *cs, hydro_t *hydro, trac *tr);
 __host__  int bilinear_interp_velocity(trac *tr);
+__host__ int MSD_trac_Calculate(trs_info *tinfo, cs_t *cs);
 
 //tracer particle exchange
 __host__ int tracer_particle_exchange(cs_t *cs, trs_info * tinfo);
@@ -92,11 +97,12 @@ __host__ int tracer_send_recv_particles(cs_t * cs, trs_info * tinfo, trac * buff
 __host__ int tracer_unpack_recv_buffer(cs_t *cs, trs_info * tinfo, trac *buffRecv[3][3][3], int countRecv[3][3][3]);   
 
 //tracer write functions
-__host__ int tracer_open_file(cs_t * cs, trac *tr);
-__host__ int tracer_close_file(trac *tr);
-__host__ int tracer_write_file(cs_t * cs,  trs_info * tinfo, int step);
+__host__ int tracer_open_trac_file(trac *tr);
+__host__ int tracer_write_trac_file(cs_t * cs,  trs_info * tinfo, int step);
+__host__ int tracer_close_MSD_file(trs_info *tinfo);
 __host__ int tracer_init_file(cs_t * cs, trs_info *tinfo);
 __host__ int tracer_write_num_distribute(cs_t *cs, trs_info *tinfo);
 __host__ int tracer_id_select_writing(cs_t *cs, trs_info *tinfo, int tracers_to_each_rank);
+__host__ int tracer_write_MSD_file(cs_t *cs, trs_info * tinfo, int step);
 
 #endif

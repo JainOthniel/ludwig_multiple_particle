@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include<stddef.h>
+#include<string.h>
 #include <math.h> 
 #include "tracers.h"
 
@@ -28,6 +29,7 @@ __host__ int tracers_main( cs_t *cs, hydro_t *hydro, trs_info *tinfo){
 
   //find current velocity
   tracer_vel_update(cs, hydro, tinfo);
+
   
   return 0;
 }
@@ -58,7 +60,7 @@ __host__ int tracers_main( cs_t *cs, hydro_t *hydro, trs_info *tinfo){
     }
     // tracer periodic update , accesses the neighbouring ranks nlocal to update the local pos
     tracer_periodic_local_pos_update(cs, &tr_arry[nt]);
-
+    
   }
 
   return 0;
@@ -226,6 +228,29 @@ __host__ int tracer_particle_exchange(cs_t *cs, trs_info * tinfo){
 
   return 0;
 
+}
+
+/*****************************************************************************
+ * 
+ * MSD_Calculate
+ * calcualte MSD
+ * 
+ *****************************************************************************/
+__host__ int MSD_trac_Calculate(trs_info *tinfo, cs_t *cs){
+
+  trac *tr_arry = tinfo->tr_array;
+  tinfo->MSD = 0.0; //initiaite MSD
+  double MSD_sum = 0.0;
+  for(int nt=0; nt< tinfo->ntracers_local; nt++){
+    for(int dim=X; dim<NHDIM; dim++){
+      double diff =(tr_arry[nt].actual_pos[dim] - tr_arry[nt].intial_pos[dim]);
+      MSD_sum += diff * diff;
+    }
+  }
+  MSD_sum = MSD_sum / tinfo->Ntracers;
+  MPI_Allreduce(&MSD_sum, &tinfo->MSD , 1, MPI_DOUBLE, MPI_SUM, cs->commcart);
+
+  return 0;
 }
 
 /*****************************************************************************
@@ -578,6 +603,7 @@ __host__ int tracers_parse_input(rt_t *rt, trs_info *tinfo){
   rt_int_parameter(rt, "tracer_io_freq", &tinfo->tracers_io_freq); // freq at which data should be written for tracerrrr
   rt_int_parameter(rt, "tracer_io_no", &tinfo->Ntracers_io_no); //total no of tracers trajec requested
   rt_int_parameter(rt, "tracer_seed", &tinfo->tracer_seed);
+  rt_int_parameter(rt, "tracer_MSD_io_freq", &tinfo->tracer_MSD_io_freq);// write and calculate freq for MSD
 
   return 0;
 }
@@ -796,13 +822,13 @@ __host__ int tracers_destruct(trs_info **tinfo, MPI_Datatype * MPI_TRAC_TYPE){
 
 /*****************************************************************************
  * added by jain
- * tracer_open_file
+ * tracer_open_trac_file
  *
  *opens tracer dat file
  *
  *****************************************************************************/
 
-__host__ int tracer_open_file(cs_t * cs, trac *tr){
+__host__ int tracer_open_trac_file(trac *tr){
 
   char filename[64];
   snprintf(filename, sizeof(filename), "tracer_%07d.dat", tr->tracer_id);
@@ -817,20 +843,31 @@ __host__ int tracer_open_file(cs_t * cs, trac *tr){
 
 /*****************************************************************************
  * added by jain
+ * tracer_open_MSD_file
+ *
+ *opens MSD dat file
+ *
+ *****************************************************************************/
+
+__host__ int tracer_open_MSD_file(trs_info *tinfo){
+
+  tinfo->MSD_file = fopen("MSD.dat","w");
+  fprintf(tinfo->MSD_file, "time MSD\n");
+  fclose(tinfo->MSD_file);
+
+  return 0;
+}
+/*****************************************************************************
+ * added by jain
  * tracer_close_file
  *
  *closes tracer dat file
  *
  *****************************************************************************/
 
-__host__ int tracer_close_file(trac *tr){
+__host__ int tracer_close_MSD_file(trs_info *tinfo){
 
-  if (tr->file_op == 1 && (tr->rel_local_coords[X] != 0 || tr->rel_local_coords[Y] != 0 
-                                          || tr->rel_local_coords[Z] != 0)){
-  // MPI_File_close(&tr->tr_file);
-  fclose(tr->tr_file);
-  tr->file_op = 0;
-  }
+  fclose(tinfo->MSD_file);
   return 0;
 }
 
@@ -844,19 +881,22 @@ __host__ int tracer_close_file(trac *tr){
 
 __host__ int  tracer_init_file(cs_t * cs, trs_info *tinfo){
 
-  // char head[64];
   // equally distribute tracers to ranks for wrtiting trajectories.
   int tracers_to_each_rank = tracer_write_num_distribute(cs, tinfo);
   
-  if(tracers_to_each_rank != 0){
+  if(tracers_to_each_rank != 0 && (tinfo->tracers_io_freq > 0) && (tinfo->Ntracers_io_no > 0)){
     
     tracer_id_select_writing(cs, tinfo, tracers_to_each_rank);
     for(int nlt =0; nlt < tinfo->ntracers_local; nlt++){
 
       if (tinfo->tr_array[nlt].sel_for_writing != 1){ continue;}
-      tracer_open_file(cs, &tinfo->tr_array[nlt]);
+      tracer_open_trac_file(&tinfo->tr_array[nlt]);
 
     }
+  }
+
+  if (tinfo->tracer_MSD_io_freq > 0){
+    tracer_open_MSD_file(tinfo);
   }
 
   return 0; 
@@ -865,20 +905,18 @@ __host__ int  tracer_init_file(cs_t * cs, trs_info *tinfo){
 /*****************************************************************************
  * added by jain
  * 
- * tracer_write_file
+ * tracer_write_trac_file
  *
  * write tracer dat file
  *
  *****************************************************************************/
 
-__host__ int tracer_write_file(cs_t * cs,  trs_info * tinfo, int step){
-
-  
+__host__ int tracer_write_trac_file(cs_t * cs,  trs_info * tinfo, int step){
 
   for(int nlt =0; nlt< tinfo->ntracers_local; nlt++){
 
     if (tinfo->tr_array[nlt].sel_for_writing != 1) continue;
-    char filename[256];
+    char filename[64];
     snprintf(filename, sizeof(filename), "tracer_%07d.dat", tinfo->tr_array[nlt].tracer_id);
     tinfo->tr_array[nlt].tr_file = fopen(filename,"a");
 
@@ -895,6 +933,28 @@ __host__ int tracer_write_file(cs_t * cs,  trs_info * tinfo, int step){
   }
   return 0;
 
+}
+
+/*****************************************************************************
+ * added by jain
+ * tracer_write_MSD_file
+ *
+ *initiate tracer dat file
+ *
+ *****************************************************************************/
+__host__ int tracer_write_MSD_file(cs_t *cs, trs_info * tinfo, int step){
+
+  int rank = cs_cart_rank(cs);
+  
+  if(rank == 0){
+
+    tinfo->MSD_file = fopen("MSD.dat","a");
+    fprintf(tinfo->MSD_file, "%d %.8e\n", step, tinfo->MSD);
+    fclose(tinfo->MSD_file);
+
+  }
+
+  return 0;
 }
 
 /*****************************************************************************
