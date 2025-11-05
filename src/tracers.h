@@ -42,6 +42,7 @@ typedef struct  tracers_info{
     int Ntracers_io_no;
     int tracer_seed;
     int tracer_MSD_io_freq;
+    int tracer_start_step; // timestep from which tracer calculation should start
 
     int tr_nbr[3][3][3];
 
@@ -69,7 +70,8 @@ __host__  int tracer_periodic_local_pos_update(cs_t * cs, trac * tr);
 
 
 //initialisation of struct
-__host__ int tracers_create(cs_t *cs,  pe_t *pe, rt_t *rt, trs_info **trsinfo);
+__host__ int tracers_info_create(cs_t *cs,  rt_t *rt, trs_info **trsinfo);
+__host__ int tracers_particle_create(cs_t *cs,  pe_t *pe, trs_info *tinfo);
 
 //main functions
 __host__ int tracers_main( cs_t *cs, hydro_t *hydro, trs_info *tinfo);

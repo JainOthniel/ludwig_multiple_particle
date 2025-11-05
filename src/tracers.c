@@ -47,20 +47,19 @@ __host__ int tracers_main( cs_t *cs, hydro_t *hydro, trs_info *tinfo){
   trac *tr_arry = tinfo->tr_array; 
   int nlocal[3];
   cs_nlocal(cs, nlocal);
-    
+  
+  #pragma omp parallel for schedule(static)
   for(int nt =0; nt < nlocal_tracers; nt++ ){
     // tracer_pos_euler_integ(cs, &tr_arry[ncount]);
     for(int dim = 0; dim<NHDIM; dim++){
       tr_arry[nt].actual_pos[dim] += tr_arry[nt].tracer_u[dim];
       tr_arry[nt].local_pos[dim] += tr_arry[nt].tracer_u[dim];
-      tr_arry[nt].rel_local_coords[dim] = (tr_arry[nt].local_pos[dim] >= nlocal[dim]) - (tr_arry[nt].local_pos[dim] < 0);
-      
+      tr_arry[nt].rel_local_coords[dim] = (tr_arry[nt].local_pos[dim] >= nlocal[dim]) - (tr_arry[nt].local_pos[dim] < 0);      
       //make the relative coordinates to 0 in those directions where there is no domain split
       if(nlocal[dim] == 1){tr_arry[nt].rel_local_coords[dim] = 0;}                                   
     }
     // tracer periodic update , accesses the neighbouring ranks nlocal to update the local pos
-    tracer_periodic_local_pos_update(cs, &tr_arry[nt]);
-    
+    tracer_periodic_local_pos_update(cs, &tr_arry[nt]);  
   }
 
   return 0;
@@ -76,15 +75,14 @@ __host__ int tracer_vel_update(cs_t *cs, hydro_t *hydro, trs_info *tinfo){
 
   int nlocal_tracers = tinfo->ntracers_local, ncount;
   trac *tr_arry = tinfo->tr_array; 
-    
+  
+  #pragma omp parallel for schedule(static)
   for(ncount =0; ncount < nlocal_tracers; ncount++ ){
     tracer_pos_grids(&tr_arry[ncount], cs);
     tracer_grid_velocities(cs, hydro, &tr_arry[ncount]);
     bilinear_interp_velocity(&tr_arry[ncount]);
   }
-
   return 0;
-
 }
 
 /******************************************************************************************************
@@ -247,8 +245,9 @@ __host__ int MSD_trac_Calculate(trs_info *tinfo, cs_t *cs){
       MSD_sum += diff * diff;
     }
   }
-  MSD_sum = MSD_sum / tinfo->Ntracers;
-  MPI_Allreduce(&MSD_sum, &tinfo->MSD , 1, MPI_DOUBLE, MPI_SUM, cs->commcart);
+  double MSD_global_sum;
+  MPI_Allreduce(&MSD_sum, &MSD_global_sum , 1, MPI_DOUBLE, MPI_SUM, cs->commcart);
+  tinfo->MSD = MSD_global_sum / tinfo->Ntracers;
 
   return 0;
 }
@@ -513,11 +512,11 @@ __host__ int tracer_unpack_recv_buffer(cs_t *cs, trs_info * tinfo, trac *buffRec
 
 /*****************************************************************************
  * 
- * tracers_create
+ * tracers_info_create
  *
  * 
  *****************************************************************************/
-__host__ int tracers_create(cs_t *cs,  pe_t *pe, rt_t *rt, trs_info **trsinfo){
+__host__ int tracers_info_create(cs_t *cs, rt_t *rt, trs_info **trsinfo){
 
   // make trs_info struct
   trs_info *tinfo;    
@@ -531,7 +530,16 @@ __host__ int tracers_create(cs_t *cs,  pe_t *pe, rt_t *rt, trs_info **trsinfo){
     return 0;
   }
 
-  //make an array of initial positions for tracers
+  //find the neighbouring rank
+  set_tr_nbr(cs, tinfo);
+
+  //define an mpi struct data type for tracer struct(for communication)
+  create_mpi_trac_datatype(&MPI_TRAC_TYPE);
+
+  //pass the created struct to the global scope
+  *trsinfo = tinfo;
+
+  /*//make an array of initial positions for tracers
   double (*initial_domain_pos)[3];
   initial_domain_pos = calloc(tinfo->Ntracers, sizeof(*initial_domain_pos));
 
@@ -552,15 +560,10 @@ __host__ int tracers_create(cs_t *cs,  pe_t *pe, rt_t *rt, trs_info **trsinfo){
   tinfo->ntracers_local = nlocal_tracer_count;
   tinfo->ntracer_capacity = tinfo->ntracers_local + tinfo->Ntracers/5;
 
-  //find the neighbouring ranks
-  set_tr_nbr(cs, tinfo);
 
 //////////////////////////////////////////////////////////////////////////////
 //initialize and allocate memory for tracer struct
 //////////////////////////////////////////////////////////////////////////////
-
-  //define an mpi struct data type for tracer struct(for communication)
-  create_mpi_trac_datatype(&MPI_TRAC_TYPE);
   
   // allocate memory for the tracer struct
   trac *tr;    
@@ -584,12 +587,72 @@ __host__ int tracers_create(cs_t *cs,  pe_t *pe, rt_t *rt, trs_info **trsinfo){
     tr[nlocal_tracer_count].tracer_id = i+1;
     nlocal_tracer_count++;
   }
-  //pass the created struct to the global scope
-  *trsinfo = tinfo;
+  free(initial_domain_pos);*/
+
+  return 0;
+}
+/*****************************************************************************
+ * 
+ * tracers_info_create
+ *
+ * 
+ *****************************************************************************/
+__host__ int tracers_particle_create(cs_t *cs,  pe_t *pe, trs_info *tinfo){
+
+  //make an array of initial positions for tracers
+  double (*initial_domain_pos)[3];
+  initial_domain_pos = calloc(tinfo->Ntracers, sizeof(*initial_domain_pos));
+
+   // generate random positions  for tracers
+  tracers_random_pos(tinfo, pe, cs, initial_domain_pos);
+
+  int working_rank = cs_cart_rank(cs);
+  int tracer_rank;
+  int nlocal_tracer_count = 0;
+
+  // find the total no of tracers local to a rank
+  for(int nt=0; nt < tinfo->Ntracers; nt++){                
+    tracer_rank = tracer_pos_rank(cs, initial_domain_pos[nt]);
+    if (working_rank != tracer_rank) continue;
+    nlocal_tracer_count++;//count the no of tracers local to a rank
+  }
+  
+  tinfo->ntracers_local = nlocal_tracer_count;
+  tinfo->ntracer_capacity = tinfo->ntracers_local + tinfo->Ntracers/5;
+
+
+//////////////////////////////////////////////////////////////////////////////
+//initialize and allocate memory for tracer struct
+//////////////////////////////////////////////////////////////////////////////
+  
+  // allocate memory for the tracer struct
+  trac *tr;    
+  tr = (trac *) calloc(tinfo->ntracer_capacity, sizeof(trac));
+
+  // initialize/ build the tracers for each rank
+  int noffset[3];
+  cs_nlocal_offset(cs, noffset);
+  tinfo->tr_array = tr;
+
+  nlocal_tracer_count =0; //again set to zero
+  for(int i=0; i<tinfo->Ntracers; i++){      
+    tracer_rank = tracer_pos_rank(cs, initial_domain_pos[i]);
+    if (tracer_rank != working_rank) continue;
+
+    for(int dim=X; dim<NHDIM; dim++){
+      tr[nlocal_tracer_count].intial_pos[dim] = initial_domain_pos[i][dim];
+      tr[nlocal_tracer_count].actual_pos[dim] = initial_domain_pos[i][dim];
+      tr[nlocal_tracer_count].local_pos[dim] = (initial_domain_pos[i][dim] - noffset[dim]);
+    }
+    tr[nlocal_tracer_count].tracer_id = i+1;
+    nlocal_tracer_count++;
+  }
+
   free(initial_domain_pos);
 
   return 0;
 }
+
 
 /*****************************************************************************
  * 
@@ -604,6 +667,7 @@ __host__ int tracers_parse_input(rt_t *rt, trs_info *tinfo){
   rt_int_parameter(rt, "tracer_io_no", &tinfo->Ntracers_io_no); //total no of tracers trajec requested
   rt_int_parameter(rt, "tracer_seed", &tinfo->tracer_seed);
   rt_int_parameter(rt, "tracer_MSD_io_freq", &tinfo->tracer_MSD_io_freq);// write and calculate freq for MSD
+  rt_int_parameter(rt, "tracer_start_step", &tinfo->tracer_start_step);
 
   return 0;
 }
@@ -852,7 +916,7 @@ __host__ int tracer_open_trac_file(trac *tr){
 __host__ int tracer_open_MSD_file(trs_info *tinfo){
 
   tinfo->MSD_file = fopen("MSD.dat","w");
-  fprintf(tinfo->MSD_file, "time MSD\n");
+  fprintf(tinfo->MSD_file, "lag-time MSD\n");
   fclose(tinfo->MSD_file);
 
   return 0;
@@ -945,11 +1009,11 @@ __host__ int tracer_write_trac_file(cs_t * cs,  trs_info * tinfo, int step){
 __host__ int tracer_write_MSD_file(cs_t *cs, trs_info * tinfo, int step){
 
   int rank = cs_cart_rank(cs);
-  
+  int lag_time = step - tinfo->tracer_start_step;
   if(rank == 0){
 
     tinfo->MSD_file = fopen("MSD.dat","a");
-    fprintf(tinfo->MSD_file, "%d %.8e\n", step, tinfo->MSD);
+    fprintf(tinfo->MSD_file, "%d %.8e\n", lag_time, tinfo->MSD);
     fclose(tinfo->MSD_file);
 
   }
