@@ -73,7 +73,8 @@ __host__ int tracers_main( cs_t *cs, hydro_t *hydro, trs_info *tinfo){
  *****************************************************************************/
 __host__ int tracer_vel_update(cs_t *cs, hydro_t *hydro, trs_info *tinfo){
 
-  int nlocal_tracers = tinfo->ntracers_local, ncount;
+  int nlocal_tracers = tinfo->ntracers_local;
+  int ncount;
   trac *tr_arry = tinfo->tr_array; 
   
   #pragma omp parallel for schedule(static)
@@ -494,7 +495,7 @@ __host__ int tracer_unpack_recv_buffer(cs_t *cs, trs_info * tinfo, trac *buffRec
     pe_fatal(cs->pe, "no of recvied particle = %d , mismatched with the count of total particles expected = %d",
     recv_size, countRecv[1][1][1]);
   }
-
+  
   memcpy(&tinfo->tr_array[tinfo->ntracers_local], temp_arr, recv_size*sizeof(trac));
   tinfo->ntracers_local += recv_size;
   free(temp_arr);
@@ -845,8 +846,21 @@ __host__ int create_mpi_trac_datatype(MPI_Datatype * MPI_TRAC_TYPE){
   offsets[5] = offsetof(trac, file_op);
   offsets[6] = offsetof(trac, sel_for_writing);
 
-  MPI_Type_create_struct(num_items, blocks, offsets, types, MPI_TRAC_TYPE);
+  MPI_Datatype temp_type;
+
+  // create the struct datatype
+  MPI_Type_create_struct(num_items, blocks, offsets, types, &temp_type);
+  MPI_Type_commit(&temp_type);
+
+  //resize it to full struct size
+  MPI_Aint lb = 0;
+  MPI_Aint extent = sizeof(trac);
+
+  MPI_Type_create_resized(temp_type, lb, extent, MPI_TRAC_TYPE);
   MPI_Type_commit(MPI_TRAC_TYPE);
+
+  //free the temporary type (important)
+  MPI_Type_free(&temp_type);
 
   return 0;
 
@@ -955,7 +969,7 @@ __host__ int  tracer_init_file(cs_t * cs, trs_info *tinfo){
 
       if (tinfo->tr_array[nlt].sel_for_writing != 1){ continue;}
       tracer_open_trac_file(&tinfo->tr_array[nlt]);
-
+      
     }
   }
 
@@ -993,10 +1007,9 @@ __host__ int tracer_write_trac_file(cs_t * cs,  trs_info * tinfo, int step){
       fflush(tinfo->tr_array[nlt].tr_file);
     }*/    
     fclose(tinfo->tr_array[nlt].tr_file);
-
+    tinfo->tr_array[nlt].tr_file = NULL; //avoids usage of garbage pointer
   }
   return 0;
-
 }
 
 /*****************************************************************************

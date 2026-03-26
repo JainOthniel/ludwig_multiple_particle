@@ -863,8 +863,6 @@ void ludwig_run(const char * inputfile) {
     }
 
 
-
-
     /* There must be no halo updates between bounce back
      * and propagation, as the halo regions are active */
 
@@ -900,7 +898,7 @@ void ludwig_run(const char * inputfile) {
           tracer_write_MSD_file(ludwig->cs, ludwig->tinfo, step);
         }
       }
-      
+
     }
     //set hydro halo to zero
     // hydro_u_zero(ludwig->hydro, uzero);
